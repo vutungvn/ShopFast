@@ -1,0 +1,39 @@
+# Tài liệu nội bộ (không đưa lên GitHub)
+/doc/
+
+# Claude Code
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+.mcp.json
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+.next/
+out/
+
+# Môi trường & bí mật
+.env
+.env.*
+!.env.example
+
+# Test & coverage
+coverage/
+.nyc_output/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Hệ điều hành / IDE
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json

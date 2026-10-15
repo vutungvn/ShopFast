@@ -1,0 +1,327 @@
+// ShopFast – Prisma schema
+// ERD chi tiết: doc/thiet-ke/erd.md
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────── Enums ─────────────────────────
+
+enum Role {
+  CUSTOMER
+  SUPPORT
+  WAREHOUSE
+  ADMIN
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  PAID
+  CONFIRMED
+  PACKING
+  SHIPPING
+  DELIVERED
+  CANCELLED
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum TicketCategory {
+  ORDER_STATUS
+  SHIPPING
+  PAYMENT
+  RETURN_REFUND
+  PRODUCT_INQUIRY
+  ACCOUNT
+  OTHER
+}
+
+enum MessageSender {
+  CUSTOMER
+  STAFF
+  AI
+}
+
+enum AgentActionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXECUTED
+  FAILED
+}
+
+enum EmailType {
+  ORDER_CONFIRMATION
+  PAYMENT_REMINDER
+  INVOICE
+  DAILY_REVENUE_REPORT
+}
+
+enum EmailStatus {
+  SENT
+  FAILED
+}
+
+// ───────────────────────── Người dùng ─────────────────────────
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String
+  fullName     String
+  phone        String?
+  role         Role     @default(CUSTOMER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  cart                 Cart?
+  orders               Order[]
+  statusChanges        OrderStatusHistory[]
+  tickets              Ticket[]             @relation("TicketCustomer")
+  assignedTickets      Ticket[]             @relation("TicketAssignee")
+  ticketMessages       TicketMessage[]
+  reviewedAgentActions AgentAction[]
+
+  @@map("users")
+}
+
+// ───────────────────────── Danh mục sản phẩm ─────────────────────────
+
+model Category {
+  id       String     @id @default(uuid()) @db.Uuid
+  name     String
+  slug     String     @unique
+  parentId String?    @db.Uuid
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+  products Product[]
+
+  @@map("categories")
+}
+
+model Brand {
+  id       String    @id @default(uuid()) @db.Uuid
+  name     String
+  slug     String    @unique
+  products Product[]
+
+  @@map("brands")
+}
+
+model Product {
+  id          String   @id @default(uuid()) @db.Uuid
+  sku         String   @unique
+  name        String
+  slug        String   @unique
+  description String?
+  price       Decimal  @db.Decimal(12, 2)
+  isActive    Boolean  @default(true)
+  categoryId  String   @db.Uuid
+  brandId     String   @db.Uuid
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  category   Category    @relation(fields: [categoryId], references: [id])
+  brand      Brand       @relation(fields: [brandId], references: [id])
+  inventory  Inventory?
+  cartItems  CartItem[]
+  orderItems OrderItem[]
+
+  @@index([categoryId])
+  @@index([brandId])
+  @@index([price])
+  @@map("products")
+}
+
+/// Tồn kho tách bảng riêng: cập nhật thường xuyên, trừ kho nguyên tử khi đặt đơn.
+/// Ràng buộc CHECK (stock >= 0) được thêm bằng SQL trong migration.
+model Inventory {
+  productId String   @id @db.Uuid
+  stock     Int
+  updatedAt DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@map("inventories")
+}
+
+// ───────────────────────── Giỏ hàng ─────────────────────────
+
+model Cart {
+  id        String     @id @default(uuid()) @db.Uuid
+  userId    String     @unique @db.Uuid
+  updatedAt DateTime   @updatedAt
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items     CartItem[]
+
+  @@map("carts")
+}
+
+model CartItem {
+  id        String  @id @default(uuid()) @db.Uuid
+  cartId    String  @db.Uuid
+  productId String  @db.Uuid
+  quantity  Int
+  cart      Cart    @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product   Product @relation(fields: [productId], references: [id])
+
+  @@unique([cartId, productId])
+  @@map("cart_items")
+}
+
+// ───────────────────────── Đơn hàng ─────────────────────────
+
+model Order {
+  id              String      @id @default(uuid()) @db.Uuid
+  code            String      @unique
+  userId          String      @db.Uuid
+  status          OrderStatus @default(PENDING_PAYMENT)
+  totalAmount     Decimal     @db.Decimal(12, 2)
+  shippingAddress String
+  paidAt          DateTime?
+  cancelledAt     DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  user          User                 @relation(fields: [userId], references: [id])
+  items         OrderItem[]
+  statusHistory OrderStatusHistory[]
+  invoice       Invoice?
+  emailLogs     EmailLog[]
+  tickets       Ticket[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@map("orders")
+}
+
+/// Lưu snapshot tên và giá tại thời điểm đặt, không phụ thuộc giá hiện tại của sản phẩm.
+model OrderItem {
+  id          String  @id @default(uuid()) @db.Uuid
+  orderId     String  @db.Uuid
+  productId   String  @db.Uuid
+  productName String
+  unitPrice   Decimal @db.Decimal(12, 2)
+  quantity    Int
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+model OrderStatusHistory {
+  id          String       @id @default(uuid()) @db.Uuid
+  orderId     String       @db.Uuid
+  fromStatus  OrderStatus?
+  toStatus    OrderStatus
+  changedById String?      @db.Uuid
+  note        String?
+  createdAt   DateTime     @default(now())
+
+  order     Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  changedBy User? @relation(fields: [changedById], references: [id])
+
+  @@index([orderId, createdAt])
+  @@map("order_status_history")
+}
+
+model Invoice {
+  id       String   @id @default(uuid()) @db.Uuid
+  orderId  String   @unique @db.Uuid
+  number   String   @unique
+  fileUrl  String?
+  issuedAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("invoices")
+}
+
+/// idempotencyKey (vd: "ORDER_CONFIRMATION:<orderId>") đảm bảo job chạy lại không gửi trùng email.
+model EmailLog {
+  id                String      @id @default(uuid()) @db.Uuid
+  idempotencyKey    String      @unique
+  type              EmailType
+  recipient         String
+  status            EmailStatus
+  orderId           String?     @db.Uuid
+  providerMessageId String?
+  error             String?
+  createdAt         DateTime    @default(now())
+
+  order Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@map("email_logs")
+}
+
+// ───────────────────────── Chăm sóc khách hàng & AI ─────────────────────────
+
+model Ticket {
+  id         String          @id @default(uuid()) @db.Uuid
+  customerId String          @db.Uuid
+  assigneeId String?         @db.Uuid
+  orderId    String?         @db.Uuid
+  subject    String
+  category   TicketCategory?
+  status     TicketStatus    @default(OPEN)
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  customer     User            @relation("TicketCustomer", fields: [customerId], references: [id])
+  assignee     User?           @relation("TicketAssignee", fields: [assigneeId], references: [id])
+  order        Order?          @relation(fields: [orderId], references: [id])
+  messages     TicketMessage[]
+  agentActions AgentAction[]
+
+  @@index([status, createdAt])
+  @@index([customerId])
+  @@map("tickets")
+}
+
+model TicketMessage {
+  id         String        @id @default(uuid()) @db.Uuid
+  ticketId   String        @db.Uuid
+  senderType MessageSender
+  senderId   String?       @db.Uuid
+  content    String
+  createdAt  DateTime      @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  sender User?  @relation(fields: [senderId], references: [id])
+
+  @@index([ticketId, createdAt])
+  @@map("ticket_messages")
+}
+
+/// Thao tác ghi do AI đề xuất, chỉ được thực thi sau khi nhân viên duyệt (human-in-the-loop).
+model AgentAction {
+  id           String            @id @default(uuid()) @db.Uuid
+  ticketId     String            @db.Uuid
+  type         String
+  payload      Json
+  reason       String?
+  status       AgentActionStatus @default(PENDING)
+  reviewedById String?           @db.Uuid
+  reviewedAt   DateTime?
+  executedAt   DateTime?
+  error        String?
+  createdAt    DateTime          @default(now())
+
+  ticket     Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  reviewedBy User?  @relation(fields: [reviewedById], references: [id])
+
+  @@index([status, createdAt])
+  @@map("agent_actions")
+}
