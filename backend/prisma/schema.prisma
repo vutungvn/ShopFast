@@ -91,8 +91,29 @@ model User {
   assignedTickets      Ticket[]             @relation("TicketAssignee")
   ticketMessages       TicketMessage[]
   reviewedAgentActions AgentAction[]
+  refreshTokens        RefreshToken[]
 
   @@map("users")
+}
+
+/// Refresh token dạng chuỗi ngẫu nhiên, chỉ lưu SHA-256. Mỗi lần refresh tạo token mới
+/// cùng familyId và thu hồi token cũ; dùng lại token đã thu hồi => thu hồi cả family.
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  familyId  String    @db.Uuid
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  userAgent String?
+  ip        String?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+  @@map("refresh_tokens")
 }
 
 // ───────────────────────── Danh mục sản phẩm ─────────────────────────

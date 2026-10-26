@@ -1,7 +1,8 @@
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import * as request from 'supertest';
+import request from 'supertest';
 import { AppModule } from './../src/app.module';
+import { configureApp } from './../src/app.setup';
 
 // Cần hạ tầng đang chạy: docker compose up -d
 describe('Health (e2e)', () => {
@@ -13,7 +14,7 @@ describe('Health (e2e)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.enableShutdownHooks();
+    configureApp(app);
     await app.init();
   });
 
