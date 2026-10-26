@@ -11,6 +11,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { ApiCookieAuth, ApiTags } from '@nestjs/swagger';
 import { Request, Response } from 'express';
+import { MessageResponseDto } from '../../common/dto/message-response.dto';
 import { Env } from '../../config/env.validation';
 import { UserResponseDto } from '../users/dto/user-response.dto';
 import { AuthService, ClientContext } from './auth.service';
@@ -83,15 +84,16 @@ export class AuthController {
 
   /** Đăng xuất phiên hiện tại và xoá cookie */
   @Post('logout')
-  @HttpCode(HttpStatus.NO_CONTENT)
+  @HttpCode(HttpStatus.OK)
   @ApiCookieAuth(REFRESH_TOKEN_COOKIE)
   async logout(
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
-  ): Promise<void> {
+  ): Promise<MessageResponseDto> {
     const rawToken = readRefreshCookie(req);
     if (rawToken) await this.auth.logout(rawToken);
     this.clearCookie(res);
+    return { message: 'Đăng xuất thành công' };
   }
 
   /** Đặt refresh token vào cookie, chỉ trả access token trong body. */

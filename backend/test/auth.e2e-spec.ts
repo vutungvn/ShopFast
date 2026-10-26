@@ -240,9 +240,10 @@ describe('Auth (e2e)', () => {
   });
 
   describe('Đăng xuất', () => {
-    it('TC16 đăng xuất => 204, cookie bị xoá, refresh không dùng được nữa', async () => {
+    it('TC16 đăng xuất => 200 kèm message, cookie bị xoá, refresh không dùng được nữa', async () => {
       const reg = await signup(uniqueEmail('logout'));
-      const res = await logout(cookieOf(reg)).expect(204);
+      const res = await logout(cookieOf(reg)).expect(200);
+      expect(res.body).toEqual({ message: 'Đăng xuất thành công' });
       expect(setCookieOf(res)).toMatch(/Expires=Thu, 01 Jan 1970/);
       await refresh(cookieOf(reg)).expect(401);
     });
@@ -253,12 +254,13 @@ describe('Auth (e2e)', () => {
       const phone = await login(email).expect(200);
       const laptop = await login(email).expect(200);
 
-      await logout(cookieOf(phone)).expect(204);
+      await logout(cookieOf(phone)).expect(200);
       await refresh(cookieOf(laptop)).expect(200);
     });
 
-    it('TC18 đăng xuất khi không có cookie vẫn 204 (idempotent)', async () => {
-      await logout().expect(204);
+    it('TC18 đăng xuất khi không có cookie vẫn 200 (idempotent)', async () => {
+      const res = await logout().expect(200);
+      expect(res.body).toEqual({ message: 'Đăng xuất thành công' });
     });
   });
 
@@ -267,7 +269,7 @@ describe('Auth (e2e)', () => {
       const email = uniqueEmail('public');
       await register(email).expect(201);
       await login(email).expect(200);
-      await logout().expect(204);
+      await logout().expect(200);
       await http.get('/health').expect(200);
     });
 
