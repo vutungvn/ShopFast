@@ -9,8 +9,9 @@ export const envSchema = z.object({
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url().default('redis://localhost:6379'),
 
-  SMTP_HOST: z.string().default('localhost'),
-  SMTP_PORT: z.coerce.number().int().positive().default(1025),
+  // Gửi email qua SMTP thật (Giai đoạn 5 bổ sung tài khoản, người gửi); chưa cấu hình thì không gửi
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
 
   JWT_ACCESS_SECRET: z.string().min(32, 'phải dài ít nhất 32 ký tự'),
   JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().positive().default(900),
