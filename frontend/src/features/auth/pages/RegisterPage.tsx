@@ -1,12 +1,16 @@
-import { useId } from 'react'
-import { Link } from 'react-router'
+import { useId, useState } from 'react'
+import { Link, useNavigate } from 'react-router'
+import { getErrorMessage, getErrorStatus } from '@/api/errors'
 import { PATHS } from '@/app/paths'
+import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { PasswordField } from '@/components/ui/PasswordField'
 import { TextField } from '@/components/ui/TextField'
 import { useForm } from '@/hooks/useForm'
+import { authApi } from '../api'
 import { AuthHeading } from '../components/AuthHeading'
 import { PasswordRequirements } from '../components/PasswordRequirements'
+import type { LoginPageState } from '../types'
 import { isPasswordRuleMessage, validateRegister, type RegisterValues } from '../validation'
 
 const INITIAL_VALUES: RegisterValues = {
@@ -19,20 +23,45 @@ const INITIAL_VALUES: RegisterValues = {
 
 export function RegisterPage() {
   const requirementsId = useId()
-  const { values, field, handleSubmit } = useForm(INITIAL_VALUES, validateRegister)
+  const navigate = useNavigate()
+  const [serverError, setServerError] = useState<string | null>(null)
+  const { values, field, handleSubmit, setFieldError, submitting } = useForm(
+    INITIAL_VALUES,
+    validateRegister,
+  )
 
   // Lỗi "chưa đủ 8 ký tự / thiếu chữ hoặc số" đã hiện trên checklist nên chỉ tô đỏ ô, không lặp chữ
   const passwordField = field('password')
   const passwordRuleFailed = isPasswordRuleMessage(passwordField.error)
 
-  const onSubmit = handleSubmit(() => {
-    // Chưa ghép API: bước sau gọi POST /auth/register (không gửi confirmPassword),
-    // thành công thì navigate(PATHS.login, { state: { notice: 'registered', email } })
+  const onSubmit = handleSubmit(async ({ fullName, email, phone, password }) => {
+    setServerError(null)
+    const normalizedEmail = email.trim().toLowerCase()
+    try {
+      await authApi.register({
+        fullName: fullName.trim(),
+        email: normalizedEmail,
+        password,
+        // Backend từ chối chuỗi rỗng ở trường không bắt buộc nên bỏ hẳn khi không nhập
+        ...(phone.trim() ? { phone: phone.trim() } : {}),
+      })
+      const state: LoginPageState = { notice: 'registered', email: normalizedEmail }
+      navigate(PATHS.login, { state })
+    } catch (error) {
+      if (getErrorStatus(error) === 409) setFieldError('email', getErrorMessage(error))
+      else setServerError(getErrorMessage(error))
+    }
   })
 
   return (
     <>
       <AuthHeading title="Tạo tài khoản" description="Đăng ký để bắt đầu mua sắm cùng ShopFast" />
+
+      {serverError && (
+        <Alert variant="error" className="mt-6">
+          {serverError}
+        </Alert>
+      )}
 
       <form noValidate onSubmit={onSubmit} className="mt-6 space-y-4">
         <TextField
@@ -85,7 +114,12 @@ export function RegisterPage() {
           placeholder="Nhập lại mật khẩu"
           {...field('confirmPassword')}
         />
-        <Button type="submit" className="mt-2 w-full" loadingText="Đang tạo tài khoản…">
+        <Button
+          type="submit"
+          className="mt-2 w-full"
+          loading={submitting}
+          loadingText="Đang tạo tài khoản…"
+        >
           Đăng ký
         </Button>
       </form>
