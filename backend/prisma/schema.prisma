@@ -188,13 +188,16 @@ model Cart {
   @@map("carts")
 }
 
+/// Ràng buộc CHECK (quantity BETWEEN 1 AND 99) được thêm bằng SQL trong migration.
 model CartItem {
-  id        String  @id @default(uuid()) @db.Uuid
-  cartId    String  @db.Uuid
-  productId String  @db.Uuid
+  id        String   @id @default(uuid()) @db.Uuid
+  cartId    String   @db.Uuid
+  productId String   @db.Uuid
   quantity  Int
-  cart      Cart    @relation(fields: [cartId], references: [id], onDelete: Cascade)
-  product   Product @relation(fields: [productId], references: [id])
+  /// Thứ tự hiển thị trong giỏ: thêm sau đứng trước
+  createdAt DateTime @default(now())
+  cart      Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product   Product  @relation(fields: [productId], references: [id])
 
   @@unique([cartId, productId])
   @@map("cart_items")
