@@ -1,10 +1,12 @@
 import { INestApplication } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { Role } from '@prisma/client';
 import { hash } from 'bcryptjs';
 import request, { Response } from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.setup';
+import { Env } from '../src/config/env.validation';
 import { PrismaService } from '../src/infra/prisma/prisma.service';
 
 // Cần hạ tầng đang chạy: docker compose up -d
@@ -32,6 +34,8 @@ describe('Auth (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let http: ReturnType<typeof request>;
+  // Giá trị kỳ vọng (TTL, bcrypt cost) lấy từ cấu hình đang chạy để test không phụ thuộc .env của từng máy
+  let config: ConfigService<Env, true>;
 
   const register = (email: string, extra: Record<string, unknown> = {}) =>
     http
@@ -83,6 +87,7 @@ describe('Auth (e2e)', () => {
     configureApp(app);
     await app.init();
     prisma = app.get(PrismaService);
+    config = app.get(ConfigService);
     http = request(app.getHttpServer());
   });
 
@@ -141,11 +146,14 @@ describe('Auth (e2e)', () => {
       expect(await prisma.user.findUnique({ where: { email } })).toBeNull();
     });
 
-    it('TC06 mật khẩu lưu dạng bcrypt hash, không phải bản rõ', async () => {
+    it('TC06 mật khẩu lưu dạng bcrypt hash (đúng cost cấu hình), không phải bản rõ', async () => {
       const email = uniqueEmail('hash');
       await register(email).expect(201);
       const user = await prisma.user.findUniqueOrThrow({ where: { email } });
-      expect(user.passwordHash).toMatch(/^\$2[aby]\$12\$/);
+      const cost = String(
+        config.get('BCRYPT_SALT_ROUNDS', { infer: true }),
+      ).padStart(2, '0');
+      expect(user.passwordHash).toMatch(new RegExp(`^\\$2[aby]\\$${cost}\\$`));
       expect(user.passwordHash).not.toContain(PASSWORD);
     });
   });
@@ -159,7 +167,10 @@ describe('Auth (e2e)', () => {
     it('TC07 đúng email + mật khẩu => 200 kèm access token', async () => {
       const res = await login(email).expect(200);
       expect(res.body.user.email).toBe(email);
-      expect(res.body).toMatchObject({ tokenType: 'Bearer', expiresIn: 900 });
+      expect(res.body).toMatchObject({
+        tokenType: 'Bearer',
+        expiresIn: config.get('JWT_ACCESS_TTL_SECONDS', { infer: true }),
+      });
       expect(res.body.accessToken).toEqual(expect.any(String));
     });
 
@@ -185,7 +196,9 @@ describe('Auth (e2e)', () => {
       expect(setCookie).toMatch(/HttpOnly/i);
       expect(setCookie).toMatch(/SameSite=Strict/i);
       expect(setCookie).toMatch(/Path=\/api\/v1\/auth/);
-      expect(setCookie).toMatch(/Max-Age=604800/); // 7 ngày
+      const maxAgeSeconds =
+        config.get('REFRESH_TOKEN_TTL_DAYS', { infer: true }) * 24 * 60 * 60;
+      expect(setCookie).toMatch(new RegExp(`Max-Age=${maxAgeSeconds}(;|$)`));
     });
 
     it('TC10 refresh bằng cookie => access token mới, cookie được xoay vòng', async () => {
