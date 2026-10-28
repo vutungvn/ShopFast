@@ -6,6 +6,7 @@ import { authApi } from '@/features/auth/api'
 import { RoleBadge } from '@/features/auth/components/RoleBadge'
 import { ROLE_LABELS } from '@/features/auth/roles'
 import type { User } from '@/features/auth/types'
+import { getInitials } from '@/lib/format'
 
 type LoadState =
   | { kind: 'loading' }
@@ -13,11 +14,6 @@ type LoadState =
   | { kind: 'error'; message: string }
 
 const dateFormat = new Intl.DateTimeFormat('vi-VN', { dateStyle: 'long' })
-
-function initials(fullName: string) {
-  const words = fullName.trim().split(/\s+/)
-  return ((words[0]?.[0] ?? '') + (words.length > 1 ? words[words.length - 1][0] : '')).toUpperCase()
-}
 
 /** Thông tin tài khoản lấy trực tiếp từ GET /users/me (endpoint cần đăng nhập). */
 export function AccountPage() {
@@ -41,7 +37,7 @@ export function AccountPage() {
   }
 
   return (
-    <>
+    <div className="mx-auto max-w-3xl">
       <title>Tài khoản của tôi · ShopFast</title>
       <div className="flex items-center justify-between gap-4">
         <h1 className="text-2xl font-bold tracking-tight">Tài khoản của tôi</h1>
@@ -61,7 +57,7 @@ export function AccountPage() {
         {state.kind === 'error' && <Alert variant="error">{state.message}</Alert>}
         {state.kind === 'success' && <AccountDetails user={state.user} />}
       </section>
-    </>
+    </div>
   )
 }
 
@@ -76,7 +72,7 @@ function AccountDetails({ user }: { user: User }) {
     <>
       <div className="flex items-center gap-4">
         <span className="flex size-14 shrink-0 items-center justify-center rounded-full bg-brand-100 text-lg font-semibold text-brand-700">
-          {initials(user.fullName)}
+          {getInitials(user.fullName)}
         </span>
         <div className="min-w-0">
           <p className="truncate text-lg font-semibold text-slate-900">{user.fullName}</p>

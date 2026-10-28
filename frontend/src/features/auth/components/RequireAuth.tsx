@@ -9,7 +9,7 @@ export function RequireAuth() {
   const { status, signedOutReason } = useAuth()
   const location = useLocation()
 
-  if (status === 'loading') return <SplashScreen />
+  if (status === 'loading') return <SplashScreen fullScreen={false} />
   if (status === 'anonymous') {
     const state: LoginPageState = {
       notice: signedOutReason ?? undefined,
