@@ -1,0 +1,14 @@
+# Mọi file văn bản dùng LF cả trong repo lẫn trên máy (kể cả Windows có core.autocrlf=true),
+# khớp quy tắc của Prettier và môi trường CI (Linux).
+* text=auto eol=lf
+
+# File nhị phân: không chuyển đổi
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
