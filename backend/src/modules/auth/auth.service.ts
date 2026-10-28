@@ -72,7 +72,7 @@ export class AuthService {
     // Luôn chạy verify (kể cả khi không có user) và trả cùng một thông báo
     const valid = await this.passwords.verify(user?.passwordHash, dto.password);
     if (!user || !valid) {
-      throw new UnauthorizedException('Email hoặc mật khẩu không đúng');
+      throw new UnauthorizedException('Test oke');
     }
     return this.buildAuthResponse(user, randomUUID(), ctx);
   }
