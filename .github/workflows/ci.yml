@@ -1,0 +1,118 @@
+# Kiểm tra tự động cho mỗi PR vào main và mỗi lần main thay đổi.
+# Tên job (Backend, Frontend) là tên status check bắt buộc trong ruleset của nhánh main.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Push thêm commit vào PR thì huỷ lần chạy cũ; trên main thì chạy đủ từng commit
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+
+    # Cùng phiên bản với docker-compose.yml; mỗi lần chạy là DB/Redis mới tinh
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: shopfast
+          POSTGRES_PASSWORD: shopfast
+          POSTGRES_DB: shopfast_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shopfast -d shopfast_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    # Chỉ dùng trong CI, không phải bí mật thật: DB/Redis bị huỷ khi job kết thúc
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://shopfast:shopfast@localhost:5432/shopfast_test?schema=public
+      REDIS_URL: redis://localhost:6379
+      JWT_ACCESS_SECRET: ci-only-test-secret-not-used-anywhere-else-0123456789
+      JWT_ACCESS_TTL_SECONDS: 900
+      REFRESH_TOKEN_TTL_DAYS: 7
+      BCRYPT_SALT_ROUNDS: 12
+      SWAGGER_ENABLED: 'false'
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Cài thư viện
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint:check
+
+      - name: Kiểm tra format
+        run: npm run format:check
+
+      - name: Build
+        run: npm run build
+
+      - name: Unit test
+        run: npm test
+
+      - name: Chạy migration vào DB rỗng
+        run: npx prisma migrate deploy
+
+      - name: E2E test
+        run: npm run test:e2e
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Cài thư viện
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
