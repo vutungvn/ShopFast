@@ -2,6 +2,8 @@ import { ShoppingCart } from 'lucide-react'
 import { Link, NavLink, Outlet, useLocation, useSearchParams } from 'react-router'
 import { PATHS } from '@/app/paths'
 import { Logo } from '@/components/brand/Logo'
+import { useAuth } from '@/features/auth/auth-context'
+import { useCart } from '@/features/cart/queries'
 import { cn } from '@/lib/cn'
 import { HeaderSearch } from './HeaderSearch'
 import { UserMenu } from './UserMenu'
@@ -11,6 +13,10 @@ export function ShopLayout() {
   const { pathname } = useLocation()
   const [searchParams] = useSearchParams()
   const currentQuery = pathname === PATHS.home ? (searchParams.get('q') ?? '') : ''
+  // Nhân viên không có giỏ; khách chưa đăng nhập bấm vào sẽ được đưa sang đăng nhập
+  const { user } = useAuth()
+  const showCart = !user || user.role === 'CUSTOMER'
+  const itemCount = useCart().data?.itemCount ?? 0
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -38,15 +44,32 @@ export function ShopLayout() {
           <HeaderSearch key={currentQuery} initialQuery={currentQuery} className="hidden max-w-xl flex-1 md:block" />
 
           <div className="ml-auto flex items-center gap-2 sm:gap-3">
-            {/* Giỏ hàng làm ở bước sau */}
-            <span
-              title="Giỏ hàng sắp ra mắt"
-              aria-label="Giỏ hàng (sắp ra mắt)"
-              className="flex size-10 cursor-not-allowed items-center justify-center rounded-xl text-slate-400"
-            >
-              <ShoppingCart className="size-5" aria-hidden />
-            </span>
-            <span className="hidden h-6 w-px bg-slate-200 sm:block" aria-hidden />
+            {showCart && (
+              <>
+                <NavLink
+                  to={PATHS.cart}
+                  aria-label={itemCount ? `Giỏ hàng (${itemCount} sản phẩm)` : 'Giỏ hàng'}
+                  className={({ isActive }) =>
+                    cn(
+                      'relative flex size-10 items-center justify-center rounded-xl transition-colors',
+                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500',
+                      isActive ? 'bg-brand-50 text-brand-600' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900',
+                    )
+                  }
+                >
+                  <ShoppingCart className="size-5" aria-hidden />
+                  {itemCount > 0 && (
+                    <span
+                      className="absolute -top-0.5 -right-0.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-brand-600 px-1 text-[11px] font-semibold text-white ring-2 ring-white"
+                      aria-hidden
+                    >
+                      {itemCount > 99 ? '99+' : itemCount}
+                    </span>
+                  )}
+                </NavLink>
+                <span className="hidden h-6 w-px bg-slate-200 sm:block" aria-hidden />
+              </>
+            )}
             <UserMenu />
           </div>
         </div>

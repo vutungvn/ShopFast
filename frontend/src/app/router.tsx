@@ -7,6 +7,7 @@ import { GuestOnly } from '@/features/auth/components/GuestOnly'
 import { RequireAuth } from '@/features/auth/components/RequireAuth'
 import { LoginPage } from '@/features/auth/pages/LoginPage'
 import { RegisterPage } from '@/features/auth/pages/RegisterPage'
+import { CartPage } from '@/features/cart/pages/CartPage'
 import { CatalogPage } from '@/features/catalog/pages/CatalogPage'
 import { ProductDetailPage } from '@/features/catalog/pages/ProductDetailPage'
 import { PATHS } from './paths'
@@ -42,7 +43,10 @@ export const router = createBrowserRouter([
           { path: PATHS.product, element: <ProductDetailPage /> },
           {
             element: <RequireAuth />,
-            children: [{ path: PATHS.account, element: <AccountPage /> }],
+            children: [
+              { path: PATHS.cart, element: <CartPage /> },
+              { path: PATHS.account, element: <AccountPage /> },
+            ],
           },
         ],
       },

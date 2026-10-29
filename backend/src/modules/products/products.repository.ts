@@ -3,7 +3,8 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { ProductSort } from './dto/product-query.dto';
 
-const productInclude = {
+/** Quan hệ luôn kèm theo sản phẩm; giỏ hàng dùng lại để trả cùng một dạng dữ liệu. */
+export const productInclude = {
   category: { select: { id: true, name: true, slug: true, parentId: true } },
   brand: { select: { id: true, name: true, slug: true } },
   inventory: { select: { stock: true } },

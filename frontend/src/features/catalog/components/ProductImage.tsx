@@ -26,9 +26,15 @@ const CATEGORY_ICONS: Record<string, LucideIcon> = {
   'ao-thun': Shirt,
 }
 
+const ICON_SIZES = {
+  thumb: 'size-8 sm:size-10',
+  card: 'size-14',
+  detail: 'size-32',
+}
+
 type ProductImageProps = {
   categorySlug: string
-  size?: 'card' | 'detail'
+  size?: 'thumb' | 'card' | 'detail'
   className?: string
 }
 
@@ -42,7 +48,7 @@ export function ProductImage({ categorySlug, size = 'card', className }: Product
       )}
     >
       <Icon
-        className={cn('text-slate-300', size === 'detail' ? 'size-32' : 'size-14')}
+        className={cn('text-slate-300', ICON_SIZES[size])}
         strokeWidth={1.25}
         aria-hidden
       />
