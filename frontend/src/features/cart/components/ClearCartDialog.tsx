@@ -1,5 +1,6 @@
 import { Trash2 } from 'lucide-react'
 import { useEffect, useRef } from 'react'
+import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 
 type ClearCartDialogProps = {
@@ -8,10 +9,18 @@ type ClearCartDialogProps = {
   onClose: () => void
   onConfirm: () => void
   loading?: boolean
+  error?: string | null
 }
 
 /** Xác nhận xoá hết giỏ. Dùng <dialog> gốc: có sẵn khoá focus, phím Esc và lớp nền mờ. */
-export function ClearCartDialog({ open, itemCount, onClose, onConfirm, loading = false }: ClearCartDialogProps) {
+export function ClearCartDialog({
+  open,
+  itemCount,
+  onClose,
+  onConfirm,
+  loading = false,
+  error,
+}: ClearCartDialogProps) {
   const ref = useRef<HTMLDialogElement>(null)
 
   useEffect(() => {
@@ -39,6 +48,11 @@ export function ClearCartDialog({ open, itemCount, onClose, onConfirm, loading =
       <p id="clear-cart-description" className="mt-1.5 text-sm text-slate-500">
         {itemCount} sản phẩm sẽ bị xoá khỏi giỏ. Bạn không thể hoàn tác thao tác này.
       </p>
+      {error && (
+        <Alert variant="error" className="mt-4">
+          {error}
+        </Alert>
+      )}
       <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
         <Button variant="outline" onClick={onClose} disabled={loading}>
           Huỷ

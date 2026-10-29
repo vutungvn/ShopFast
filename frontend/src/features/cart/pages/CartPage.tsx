@@ -1,28 +1,36 @@
 import { ArrowLeft, ShieldAlert, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { Link } from 'react-router'
+import { getErrorMessage } from '@/api/errors'
 import { PATHS } from '@/app/paths'
+import { Alert } from '@/components/ui/Alert'
 import { Breadcrumb } from '@/components/ui/Breadcrumb'
 import { Button } from '@/components/ui/Button'
 import { buttonClasses } from '@/components/ui/button-styles'
 import { EmptyState } from '@/components/ui/EmptyState'
-import { useAuth } from '@/features/auth/auth-context'
 import { formatPrice } from '@/lib/format'
 import { CartItemRow } from '../components/CartItemRow'
 import { CartSummary, CheckoutButton } from '../components/CartSummary'
 import { ClearCartDialog } from '../components/ClearCartDialog'
 import { EmptyCart } from '../components/EmptyCart'
-import { useMockCart } from '../mock-cart'
+import {
+  useCanUseCart,
+  useCart,
+  useClearCart,
+  usePendingCartProductIds,
+  useRemoveCartItem,
+  useUpdateCartItem,
+} from '../queries'
+import type { Cart } from '../types'
 
 export function CartPage() {
-  const { user } = useAuth()
+  const canUseCart = useCanUseCart()
 
   return (
     <>
       <title>Giỏ hàng · ShopFast</title>
       <Breadcrumb items={[{ label: 'Trang chủ', to: PATHS.home }, { label: 'Giỏ hàng' }]} />
-      {/* Backend chỉ cho khách hàng dùng giỏ (nhân viên nhận 403) */}
-      {user?.role === 'CUSTOMER' ? (
+      {canUseCart ? (
         <CustomerCart />
       ) : (
         <div className="mt-5 rounded-2xl border border-slate-200 bg-white">
@@ -43,9 +51,38 @@ export function CartPage() {
 }
 
 function CustomerCart() {
-  const { cart, updateQuantity, removeItem, clear } = useMockCart()
+  const cart = useCart()
+
+  if (cart.isPending) return <CartSkeleton />
+
+  if (cart.isError) {
+    return (
+      <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-6">
+        <Alert variant="error">Không tải được giỏ hàng. {getErrorMessage(cart.error)}</Alert>
+        <Button variant="outline" size="sm" className="mt-4" onClick={() => cart.refetch()}>
+          Thử lại
+        </Button>
+      </div>
+    )
+  }
+
+  return <CartContent cart={cart.data} />
+}
+
+function CartContent({ cart }: { cart: Cart }) {
+  const updateItem = useUpdateCartItem()
+  const removeItem = useRemoveCartItem()
+  const clearCart = useClearCart()
+  const pendingIds = usePendingCartProductIds()
+  const [error, setError] = useState<string | null>(null)
   const [confirmClear, setConfirmClear] = useState(false)
   const isEmpty = cart.items.length === 0
+
+  // mutateAsync thay cho callback của mutate: callback chỉ chạy cho lần gọi cuối, còn ở đây nhiều dòng có thể cùng lưu
+  const run = (action: Promise<unknown>) => {
+    setError(null)
+    action.catch((e: unknown) => setError(getErrorMessage(e)))
+  }
 
   return (
     <>
@@ -68,15 +105,26 @@ function CustomerCart() {
         ) : (
           <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start xl:grid-cols-[minmax(0,1fr)_400px]">
             <div className="min-w-0">
+              {error && (
+                <Alert variant="error" className="mb-4">
+                  {error}
+                </Alert>
+              )}
               <ul className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                {cart.items.map((item) => (
-                  <CartItemRow
-                    key={item.product.id}
-                    item={item}
-                    onQuantityChange={(quantity) => updateQuantity(item.product.id, quantity)}
-                    onRemove={() => removeItem(item.product.id)}
-                  />
-                ))}
+                {cart.items.map((item) => {
+                  const productId = item.product.id
+                  return (
+                    <CartItemRow
+                      key={productId}
+                      item={item}
+                      pending={pendingIds.includes(productId)}
+                      onQuantityChange={(quantity) =>
+                        quantity !== item.quantity && run(updateItem.mutateAsync({ productId, quantity }))
+                      }
+                      onRemove={() => run(removeItem.mutateAsync({ productId }))}
+                    />
+                  )
+                })}
               </ul>
               <Link
                 to={PATHS.home}
@@ -111,12 +159,37 @@ function CustomerCart() {
       <ClearCartDialog
         open={confirmClear}
         itemCount={cart.itemCount}
-        onClose={() => setConfirmClear(false)}
-        onConfirm={() => {
-          clear()
+        loading={clearCart.isPending}
+        error={clearCart.error ? getErrorMessage(clearCart.error) : null}
+        onClose={() => {
           setConfirmClear(false)
+          clearCart.reset()
         }}
+        onConfirm={() => clearCart.mutate(undefined, { onSuccess: () => setConfirmClear(false) })}
       />
     </>
+  )
+}
+
+function CartSkeleton() {
+  return (
+    <div className="animate-pulse" aria-label="Đang tải giỏ hàng">
+      <div className="mt-2 h-8 w-64 rounded bg-slate-200" />
+      <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px] xl:grid-cols-[minmax(0,1fr)_400px]">
+        <div className="divide-y divide-slate-100 rounded-2xl border border-slate-200 bg-white">
+          {Array.from({ length: 3 }, (_, i) => (
+            <div key={i} className="flex gap-4 p-4 sm:p-5">
+              <div className="size-18 shrink-0 rounded-xl bg-slate-100 sm:size-24" />
+              <div className="flex-1 space-y-2.5 py-1">
+                <div className="h-3 w-16 rounded bg-slate-200" />
+                <div className="h-4 w-2/3 rounded bg-slate-200" />
+                <div className="h-3 w-40 rounded bg-slate-200" />
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="h-72 rounded-2xl border border-slate-200 bg-white" />
+      </div>
+    </div>
   )
 }

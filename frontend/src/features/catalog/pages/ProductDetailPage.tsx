@@ -1,6 +1,7 @@
 import { PackageX, ShoppingCart } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { Link, useParams } from 'react-router'
+import { Link, useLocation, useNavigate, useParams } from 'react-router'
 import { getErrorMessage, getErrorStatus } from '@/api/errors'
 import { PATHS } from '@/app/paths'
 import { Alert } from '@/components/ui/Alert'
@@ -9,7 +10,11 @@ import { Button } from '@/components/ui/Button'
 import { buttonClasses } from '@/components/ui/button-styles'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { QuantityStepper } from '@/components/ui/QuantityStepper'
+import { Toast } from '@/components/ui/Toast'
+import { useAuth } from '@/features/auth/auth-context'
+import type { LoginPageState } from '@/features/auth/types'
 import { MAX_QUANTITY_PER_ITEM } from '@/features/cart/constants'
+import { useAddToCart, useCart } from '@/features/cart/queries'
 import { formatPrice } from '@/lib/format'
 import { findCategoryPath } from '../category-tree'
 import { ProductCard, ProductCardSkeleton } from '../components/ProductCard'
@@ -57,11 +62,54 @@ export function ProductDetailPage() {
   return <ProductDetail key={product.data.id} product={product.data} />
 }
 
+type Notice = { id: number; variant: 'success' | 'error'; message: string }
+
 function ProductDetail({ product }: { product: Product }) {
   const categories = useCategoryTree()
+  const { user } = useAuth()
+  const cart = useCart()
+  const addToCart = useAddToCart()
+  const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const location = useLocation()
   const [quantity, setQuantity] = useState(1)
+  const [notice, setNotice] = useState<Notice | null>(null)
+
   const outOfStock = product.stock <= 0
-  const maxQuantity = Math.max(1, Math.min(product.stock, MAX_QUANTITY_PER_ITEM))
+  const isStaff = !!user && user.role !== 'CUSTOMER'
+  // Trừ phần đã có trong giỏ: backend cộng dồn rồi mới so với tồn kho và giới hạn mỗi loại
+  const inCart = cart.data?.items.find((item) => item.product.id === product.id)?.quantity ?? 0
+  const remaining = Math.max(0, Math.min(product.stock, MAX_QUANTITY_PER_ITEM) - inCart)
+  const maxQuantity = Math.max(1, remaining)
+  const value = Math.min(quantity, maxQuantity)
+  const canAdd = !outOfStock && remaining > 0
+  const addLabel = outOfStock ? 'Hết hàng' : remaining === 0 ? 'Giỏ đã đủ số lượng tối đa' : 'Thêm vào giỏ hàng'
+
+  const handleAdd = () => {
+    if (!user) {
+      // Đăng nhập xong quay lại đúng sản phẩm này
+      const state: LoginPageState = { from: location.pathname + location.search }
+      navigate(PATHS.login, { state })
+      return
+    }
+    addToCart.mutate(
+      { productId: product.id, quantity: value },
+      {
+        onSuccess: () => {
+          setNotice({ id: Date.now(), variant: 'success', message: `${product.name} × ${value}` })
+          setQuantity(1)
+        },
+        onError: (error) => {
+          setNotice({ id: Date.now(), variant: 'error', message: getErrorMessage(error) })
+          // Hết hàng / ngừng bán / kho đổi: tải lại để hiện tồn kho mới
+          const status = getErrorStatus(error)
+          if (status === 404 || status === 409) {
+            void queryClient.invalidateQueries({ queryKey: ['product', product.slug] })
+          }
+        },
+      },
+    )
+  }
 
   const categoryPath = categories.data
     ? findCategoryPath(categories.data, (n) => n.id === product.category.id)
@@ -113,22 +161,35 @@ function ProductDetail({ product }: { product: Product }) {
             <p className="text-sm font-medium text-slate-700">Số lượng</p>
             <div className="mt-2 flex items-center gap-3">
               <QuantityStepper
-                value={quantity}
+                value={value}
                 max={maxQuantity}
                 onChange={setQuantity}
-                disabled={outOfStock}
+                disabled={!canAdd || isStaff}
               />
-              {!outOfStock && <span className="text-sm text-slate-500">Tối đa {maxQuantity} sản phẩm</span>}
+              {canAdd && !isStaff && (
+                <span className="text-sm text-slate-500">
+                  Tối đa {remaining} sản phẩm
+                  {inCart > 0 && <span className="text-slate-400"> · Giỏ đã có {inCart}</span>}
+                </span>
+              )}
             </div>
 
-            {/* Giỏ hàng làm ở bước sau: tạm khoá nút. Mobile dùng thanh dính đáy bên dưới */}
+            {/* Mobile dùng thanh dính đáy bên dưới */}
             <div className="mt-5 hidden lg:block">
-              <Button size="lg" className="w-full" disabled title="Giỏ hàng sắp ra mắt">
-                <ShoppingCart className="size-5" aria-hidden />
-                {outOfStock ? 'Hết hàng' : 'Thêm vào giỏ hàng'}
-              </Button>
-              {!outOfStock && (
-                <p className="mt-2 text-center text-xs text-slate-400">Tính năng giỏ hàng sắp ra mắt</p>
+              {isStaff ? (
+                <Alert variant="warning">Tài khoản nhân viên không thể mua hàng.</Alert>
+              ) : (
+                <Button
+                  size="lg"
+                  className="w-full"
+                  disabled={!canAdd}
+                  loading={addToCart.isPending}
+                  loadingText="Đang thêm..."
+                  onClick={handleAdd}
+                >
+                  <ShoppingCart className="size-5" aria-hidden />
+                  {addLabel}
+                </Button>
               )}
             </div>
           </div>
@@ -159,12 +220,38 @@ function ProductDetail({ product }: { product: Product }) {
           <p className="text-xs text-slate-500">Giá bán</p>
           <p className="truncate text-lg font-bold text-brand-600">{formatPrice(product.price)}</p>
         </div>
-        <Button className="ml-auto" disabled title="Giỏ hàng sắp ra mắt">
-          <ShoppingCart className="size-5" aria-hidden />
-          {outOfStock ? 'Hết hàng' : 'Thêm vào giỏ'}
-        </Button>
+        {isStaff ? (
+          <p className="ml-auto text-right text-sm text-slate-500">Tài khoản nhân viên không thể mua hàng</p>
+        ) : (
+          <Button
+            className="ml-auto"
+            disabled={!canAdd}
+            loading={addToCart.isPending}
+            loadingText="Đang thêm..."
+            onClick={handleAdd}
+          >
+            <ShoppingCart className="size-5" aria-hidden />
+            {outOfStock ? 'Hết hàng' : remaining === 0 ? 'Đã đủ tối đa' : 'Thêm vào giỏ'}
+          </Button>
+        )}
       </div>
       <div className="h-20 lg:hidden" aria-hidden />
+
+      {notice && (
+        <Toast
+          key={notice.id}
+          variant={notice.variant}
+          title={notice.variant === 'success' ? 'Đã thêm vào giỏ hàng' : 'Không thêm được vào giỏ'}
+          onClose={() => setNotice(null)}
+        >
+          <p className="truncate">{notice.message}</p>
+          {notice.variant === 'success' && (
+            <Link to={PATHS.cart} className={buttonClasses('primary', 'sm', 'mt-3')}>
+              Xem giỏ hàng
+            </Link>
+          )}
+        </Toast>
+      )}
     </>
   )
 }

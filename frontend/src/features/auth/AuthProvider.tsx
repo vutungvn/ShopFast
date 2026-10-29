@@ -1,5 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { refreshAccessToken, setAccessToken, setSessionExpiredHandler } from '@/api/client'
+import { queryClient } from '@/app/queryClient'
+import { CART_QUERY_KEY } from '@/features/cart/queries'
 import { authApi } from './api'
 import { AuthContext, type AuthState } from './auth-context'
 
@@ -33,9 +35,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Refresh thất bại giữa chừng (cookie hết hạn, bị thu hồi khi đổi vai trò...)
   useEffect(() => {
-    setSessionExpiredHandler(() =>
-      setState({ status: 'anonymous', user: null, signedOutReason: 'session-expired' }),
-    )
+    setSessionExpiredHandler(() => {
+      clearPrivateData()
+      setState({ status: 'anonymous', user: null, signedOutReason: 'session-expired' })
+    })
     return () => setSessionExpiredHandler(null)
   }, [])
 
@@ -49,8 +52,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Lỗi mạng khi đăng xuất vẫn xoá phiên phía trình duyệt; cookie còn lại sẽ tự hết hạn
     await authApi.logout().catch(() => undefined)
     setAccessToken(null)
+    clearPrivateData()
     setState({ status: 'anonymous', user: null, signedOutReason: 'logged-out' })
   }
 
   return <AuthContext value={{ ...state, login, logout }}>{children}</AuthContext>
+}
+
+/** Bỏ dữ liệu riêng của người dùng khỏi cache khi rời phiên */
+function clearPrivateData() {
+  queryClient.removeQueries({ queryKey: CART_QUERY_KEY })
 }
