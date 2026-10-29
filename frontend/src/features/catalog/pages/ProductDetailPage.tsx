@@ -1,4 +1,4 @@
-import { Bot, PackageX, ShieldCheck, ShoppingCart, Truck } from 'lucide-react'
+import { PackageX, ShoppingCart } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { getErrorMessage, getErrorStatus } from '@/api/errors'
@@ -9,22 +9,15 @@ import { Button } from '@/components/ui/Button'
 import { buttonClasses } from '@/components/ui/button-styles'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { QuantityStepper } from '@/components/ui/QuantityStepper'
+import { MAX_QUANTITY_PER_ITEM } from '@/features/cart/constants'
 import { formatPrice } from '@/lib/format'
 import { findCategoryPath } from '../category-tree'
 import { ProductCard, ProductCardSkeleton } from '../components/ProductCard'
 import { ProductImage } from '../components/ProductImage'
 import { StockStatus } from '../components/StockStatus'
+import { PERKS } from '../perks'
 import { useCategoryTree, useProduct, useProducts } from '../queries'
 import type { Product } from '../types'
-
-// Khớp giới hạn số lượng mỗi sản phẩm trong giỏ (sẽ làm ở bước giỏ hàng)
-const MAX_QUANTITY_PER_ITEM = 99
-
-const PERKS = [
-  { icon: ShieldCheck, text: 'Hàng chính hãng, bảo hành 12 tháng' },
-  { icon: Truck, text: 'Theo dõi trạng thái đơn hàng theo thời gian thực' },
-  { icon: Bot, text: 'Hỗ trợ khách hàng cùng trợ lý AI' },
-]
 
 export function ProductDetailPage() {
   const { slug = '' } = useParams()

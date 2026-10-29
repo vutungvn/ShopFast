@@ -2,6 +2,7 @@
 export const PATHS = {
   home: '/',
   product: '/products/:slug',
+  cart: '/cart',
   account: '/account',
   login: '/login',
   register: '/register',
