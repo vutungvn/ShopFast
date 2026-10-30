@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -21,10 +22,13 @@ import { CancelOrderDto } from './dto/cancel-order.dto';
 import { PaginatedResult } from '../../common/dto/pagination.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderQueryDto } from './dto/order-query.dto';
+import { StaffOrderQueryDto } from './dto/staff-order-query.dto';
+import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import {
   OrderDetailDto,
   OrderResponseDto,
   OrderSummaryDto,
+  StaffOrderSummaryDto,
 } from './dto/order-response.dto';
 import { OrdersService } from './orders.service';
 
@@ -46,6 +50,19 @@ export class OrdersController {
     @Body() dto: CreateOrderDto,
   ): Promise<OrderResponseDto> {
     return this.orders.placeOrder(user.id, dto);
+  }
+
+  /**
+   * Danh sách đơn cho nhân viên (kho, admin; CSKH chỉ xem): lọc nhiều trạng thái, khoảng ngày đặt
+   * `from`/`to` (giờ VN), tìm `q` theo mã đơn / SĐT người nhận, `sort=oldest` cho hàng đợi xử lý
+   */
+  @Get()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.WAREHOUSE, Role.ADMIN, Role.SUPPORT)
+  listForStaff(
+    @Query() query: StaffOrderQueryDto,
+  ): Promise<PaginatedResult<StaffOrderSummaryDto>> {
+    return this.orders.listForStaff(query);
   }
 
   /** Đơn của tôi (chỉ khách hàng): mới nhất trước, lọc nhiều trạng thái `status=PAID,CONFIRMED`, phân trang */
@@ -90,18 +107,34 @@ export class OrdersController {
   }
 
   /**
-   * Khách huỷ đơn của mình khi đơn còn chờ thanh toán / đã thanh toán (đã thanh toán = hoàn tiền giả lập).
-   * Hàng được trả lại kho ngay. Kho đã xác nhận trở đi hoặc đơn đã huỷ => 409; không có đơn => 404.
+   * Kho đẩy đơn sang bước kế tiếp (kho, admin): PAID → CONFIRMED → PACKING → SHIPPING → DELIVERED.
+   * `status` là trạng thái đích; không đúng bước kế tiếp (nhảy cóc, lùi, người khác vừa đổi) => 409.
+   */
+  @Patch(':id/status')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.WAREHOUSE, Role.ADMIN)
+  updateStatus(
+    @CurrentUser() user: AuthUser,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() dto: UpdateOrderStatusDto,
+  ): Promise<OrderDetailDto> {
+    return this.orders.updateStatus(user, id, dto);
+  }
+
+  /**
+   * Huỷ đơn và trả kho ngay. Đơn đã thanh toán => ghi chú hoàn tiền giả lập.
+   * Khách: đơn của mình, khi còn chờ thanh toán / đã thanh toán, lý do tuỳ chọn.
+   * Kho / admin: mọi đơn, tới hết bước đóng gói, bắt buộc lý do (≥ 5 ký tự).
    */
   @Post(':id/cancel')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.CUSTOMER)
+  @Roles(Role.CUSTOMER, Role.WAREHOUSE, Role.ADMIN)
   cancel(
     @CurrentUser() user: AuthUser,
     @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
     @Body() dto: CancelOrderDto,
   ): Promise<OrderResponseDto> {
-    return this.orders.cancel(user.id, id, dto);
+    return this.orders.cancel(user, id, dto);
   }
 }

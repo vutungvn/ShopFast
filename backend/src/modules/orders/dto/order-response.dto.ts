@@ -1,7 +1,7 @@
 import { OrderStatus, Role } from '@prisma/client';
 import { CartIssue } from '../../cart/dto/cart-response.dto';
 import { CustomerActions } from '../order-rules';
-import { OrderDetail, OrderWithItems } from '../orders.repository';
+import { OrderDetail, OrderWithItems, StaffOrder } from '../orders.repository';
 
 export class OrderItemResponseDto {
   productId: string;
@@ -166,6 +166,30 @@ export class OrderDetailDto extends OrderResponseDto {
         createdAt: entry.createdAt,
       })),
       ...actions,
+    };
+  }
+}
+
+/** Một đơn trong danh sách của nhân viên: thẻ đơn + khách, người nhận và việc kho làm được tiếp */
+export class StaffOrderSummaryDto extends OrderSummaryDto {
+  customer: { id: string; fullName: string; email: string };
+  recipientName: string;
+  recipientPhone: string;
+  /** Bước kế tiếp hợp lệ cho PATCH /orders/:id/status; null nếu không đi tiếp được */
+  nextStatus: OrderStatus | null;
+  canStaffCancel: boolean;
+
+  static fromStaff(
+    order: StaffOrder,
+    actions: CustomerActions,
+    staff: { nextStatus: OrderStatus | null; canStaffCancel: boolean },
+  ): StaffOrderSummaryDto {
+    return {
+      ...OrderSummaryDto.from(order, actions),
+      customer: order.user,
+      recipientName: order.recipientName,
+      recipientPhone: order.recipientPhone,
+      ...staff,
     };
   }
 }

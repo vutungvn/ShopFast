@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -13,14 +14,23 @@ import { CartIssue } from '../cart/dto/cart-response.dto';
 import { CancelOrderDto } from './dto/cancel-order.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderQueryDto } from './dto/order-query.dto';
+import { StaffOrderQueryDto } from './dto/staff-order-query.dto';
+import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import {
   CheckoutProblemDto,
   OrderDetailDto,
   OrderResponseDto,
   OrderSummaryDto,
+  StaffOrderSummaryDto,
 } from './dto/order-response.dto';
 import { generateOrderCode } from './order-code';
-import { CUSTOMER_CANCELLABLE, customerActions } from './order-rules';
+import {
+  CUSTOMER_CANCELLABLE,
+  customerActions,
+  nextStatus,
+  STAFF_CANCELLABLE,
+  STATUS_LABELS,
+} from './order-rules';
 import {
   Checkout,
   OrderWithItems,
@@ -30,6 +40,15 @@ import {
 
 /** Số lần tạo lại mã khi trùng; 32^4 mã/ngày nên trùng 3 lần liên tiếp gần như không thể */
 const MAX_CODE_ATTEMPTS = 3;
+
+/** Nhân viên huỷ đơn phải ghi rõ lý do để khách và CSKH tra lại được */
+const MIN_STAFF_CANCEL_REASON = 5;
+
+/** Việt Nam UTC+7 quanh năm: 00:00 giờ VN = 17:00 UTC hôm trước */
+const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const vnDayStart = (date: string) =>
+  new Date(Date.parse(`${date}T00:00:00Z`) - VN_OFFSET_MS);
 
 const ISSUE_LABELS: Record<CartIssue, (stock: number) => string> = {
   [CartIssue.INACTIVE]: () => 'ngừng bán',
@@ -113,32 +132,119 @@ export class OrdersService {
     );
   }
 
-  /** Khách huỷ đơn của mình khi đơn còn PENDING_PAYMENT / PAID; trả kho trong cùng transaction. */
+  /**
+   * Huỷ đơn và trả kho trong cùng transaction.
+   * Khách: chỉ đơn của mình, khi còn PENDING_PAYMENT / PAID, lý do tuỳ chọn.
+   * Nhân viên kho / admin: mọi đơn, tới hết PACKING, bắt buộc lý do.
+   */
   async cancel(
-    userId: string,
+    actor: AuthUser,
     orderId: string,
     dto: CancelOrderDto,
   ): Promise<OrderResponseDto> {
+    const isCustomer = actor.role === Role.CUSTOMER;
+    if (!isCustomer && (dto.reason?.length ?? 0) < MIN_STAFF_CANCEL_REASON) {
+      throw new BadRequestException(
+        `Nhân viên huỷ đơn phải ghi lý do (ít nhất ${MIN_STAFF_CANCEL_REASON} ký tự)`,
+      );
+    }
     const order = await this.orders.withLockedOrder(
       orderId,
-      userId,
+      isCustomer ? actor.id : undefined,
       async (locked) => {
         if (!locked) throw new NotFoundException('Không tìm thấy đơn hàng');
         if (locked.status === OrderStatus.CANCELLED) {
           throw new ConflictException('Đơn hàng đã bị huỷ');
         }
-        if (!CUSTOMER_CANCELLABLE.includes(locked.status)) {
-          throw new ConflictException('Đơn hàng đã được xử lý, không thể huỷ');
+        const allowed = isCustomer ? CUSTOMER_CANCELLABLE : STAFF_CANCELLABLE;
+        if (!allowed.includes(locked.status)) {
+          throw new ConflictException(
+            isCustomer
+              ? 'Đơn hàng đã được xử lý, không thể huỷ'
+              : `Không thể huỷ đơn đang ở trạng thái '${STATUS_LABELS[locked.status]}'`,
+          );
         }
         const notes = [
           dto.reason,
-          // Đã thanh toán: hoàn tiền chỉ là ghi chú, chưa có cổng thanh toán thật
-          locked.status === OrderStatus.PAID ? 'Hoàn tiền (giả lập)' : null,
+          // Đã thanh toán (kể cả đã sang bước xử lý sau): hoàn tiền chỉ là ghi chú, chưa có cổng thật
+          locked.paidAt ? 'Hoàn tiền (giả lập)' : null,
         ].filter(Boolean);
-        return locked.cancel(userId, notes.length ? notes.join(' · ') : null);
+        return locked.cancel(actor.id, notes.length ? notes.join(' · ') : null);
       },
     );
     return OrderResponseDto.from(order);
+  }
+
+  /** Danh sách đơn cho nhân viên (kho, admin, CSKH chỉ xem) */
+  async listForStaff(
+    query: StaffOrderQueryDto,
+  ): Promise<PaginatedResult<StaffOrderSummaryDto>> {
+    if (query.from && query.to && query.from > query.to) {
+      throw new BadRequestException('from phải trước hoặc bằng to');
+    }
+    const [orders, total] = await this.orders.listForStaff({
+      filter: {
+        statuses: query.status,
+        placedFrom: query.from ? vnDayStart(query.from) : undefined,
+        // Gồm cả ngày `to`: lấy tới trước 00:00 ngày hôm sau
+        placedBefore: query.to
+          ? new Date(vnDayStart(query.to).getTime() + DAY_MS)
+          : undefined,
+        q: query.q || undefined,
+      },
+      oldestFirst: query.sort === 'oldest',
+      skip: query.skip,
+      take: query.limit,
+    });
+    const timeoutMs = this.paymentTimeoutMs();
+    const now = new Date();
+    return paginate(
+      orders.map((order) =>
+        StaffOrderSummaryDto.fromStaff(
+          order,
+          customerActions(order, timeoutMs, now),
+          {
+            nextStatus: nextStatus(order.status),
+            canStaffCancel: STAFF_CANCELLABLE.includes(order.status),
+          },
+        ),
+      ),
+      total,
+      query,
+    );
+  }
+
+  /**
+   * Kho đẩy đơn sang bước kế tiếp. `dto.status` là trạng thái đích và phải đúng bước kế tiếp của
+   * trạng thái hiện tại (đọc sau khi khoá đơn), nên hai người cùng bấm thì người sau nhận 409.
+   */
+  async updateStatus(
+    staff: AuthUser,
+    orderId: string,
+    dto: UpdateOrderStatusDto,
+  ): Promise<OrderDetailDto> {
+    const order = await this.orders.withLockedOrder(
+      orderId,
+      undefined,
+      async (locked) => {
+        if (!locked) throw new NotFoundException('Không tìm thấy đơn hàng');
+        if (nextStatus(locked.status) !== dto.status) {
+          throw new ConflictException({
+            statusCode: 409,
+            error: 'Conflict',
+            message: `Không thể chuyển đơn từ '${STATUS_LABELS[locked.status]}' sang '${STATUS_LABELS[dto.status]}'`,
+            // Để UI biết đơn vừa bị người khác đổi và tải lại
+            currentStatus: locked.status,
+          });
+        }
+        return locked.changeStatus(dto.status, staff.id, dto.note || null);
+      },
+    );
+    return OrderDetailDto.fromDetail(
+      order,
+      customerActions(order, this.paymentTimeoutMs()),
+      { showStaff: true },
+    );
   }
 
   private paymentTimeoutMs(): number {

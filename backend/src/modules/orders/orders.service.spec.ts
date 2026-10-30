@@ -1,10 +1,15 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { OrderStatus, Prisma, Role } from '@prisma/client';
 import { Env } from '../../config/env.validation';
 import { CheckoutLine } from '../cart/cart.repository';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderQueryDto } from './dto/order-query.dto';
+import { StaffOrderQueryDto } from './dto/staff-order-query.dto';
 import {
   Checkout,
   LockedOrder,
@@ -300,46 +305,66 @@ describe('OrdersService.pay', () => {
   });
 });
 
-describe('OrdersService.cancel', () => {
-  /** Đơn khoá giả ở trạng thái cho trước; null = không có đơn của user này */
-  function setup(status: OrderStatus | null) {
-    const cancelled = {
-      ...savedOrder({
-        code: 'SF-261030-AAAA',
-        userId: 'u1',
-        ...dto,
-        shippingFee: new Prisma.Decimal(0),
-        totalAmount: new Prisma.Decimal(500),
-        items: [],
-      }),
-      status: OrderStatus.CANCELLED,
-      cancelledAt: new Date(),
-    };
-    const locked: jest.Mocked<LockedOrder> | null = status
-      ? { status, cancel: jest.fn().mockResolvedValue(cancelled) }
-      : null;
-    const repo = {
-      withLockedOrder: jest.fn((_id, _userId, work) => work(locked)),
-    } as unknown as jest.Mocked<OrdersRepository>;
-    return { locked, repo, service: new OrdersService(repo, config) };
-  }
+const customerActor = { id: 'u1', email: 'a@b.c', role: Role.CUSTOMER };
+const warehouseActor = { id: 's1', email: 'k@b.c', role: Role.WAREHOUSE };
+
+/** Đơn khoá giả ở trạng thái cho trước; null = không thấy đơn */
+function lockedSetup(status: OrderStatus | null, paidAt: Date | null = null) {
+  const cancelled = {
+    ...savedOrder({
+      code: 'SF-261030-AAAA',
+      userId: 'u1',
+      ...dto,
+      shippingFee: new Prisma.Decimal(0),
+      totalAmount: new Prisma.Decimal(500),
+      items: [],
+    }),
+    status: OrderStatus.CANCELLED,
+    cancelledAt: new Date(),
+  };
+  const locked: jest.Mocked<LockedOrder> | null = status
+    ? {
+        status,
+        paidAt,
+        cancel: jest.fn().mockResolvedValue(cancelled),
+        changeStatus: jest.fn(),
+      }
+    : null;
+  const repo = {
+    withLockedOrder: jest.fn((_id, _userId, work) => work(locked)),
+  } as unknown as jest.Mocked<OrdersRepository>;
+  return { locked, repo, service: new OrdersService(repo, config) };
+}
+
+describe('OrdersService.cancel – khách', () => {
+  it('chỉ tìm trong đơn của chính khách', async () => {
+    const { service, repo } = lockedSetup(OrderStatus.PENDING_PAYMENT);
+    await service.cancel(customerActor, 'o1', {});
+    expect(repo.withLockedOrder).toHaveBeenCalledWith(
+      'o1',
+      'u1',
+      expect.any(Function),
+    );
+  });
 
   it('đơn chờ thanh toán => huỷ, ghi lý do khách nhập', async () => {
-    const { service, locked } = setup(OrderStatus.PENDING_PAYMENT);
-    const order = await service.cancel('u1', 'o1', { reason: 'Đặt nhầm' });
+    const { service, locked } = lockedSetup(OrderStatus.PENDING_PAYMENT);
+    const order = await service.cancel(customerActor, 'o1', {
+      reason: 'Đặt nhầm',
+    });
     expect(order.status).toBe(OrderStatus.CANCELLED);
     expect(locked?.cancel).toHaveBeenCalledWith('u1', 'Đặt nhầm');
   });
 
   it('không nhập lý do (hoặc chỉ khoảng trắng đã bị cắt) => note null', async () => {
-    const { service, locked } = setup(OrderStatus.PENDING_PAYMENT);
-    await service.cancel('u1', 'o1', { reason: '' });
+    const { service, locked } = lockedSetup(OrderStatus.PENDING_PAYMENT);
+    await service.cancel(customerActor, 'o1', { reason: '' });
     expect(locked?.cancel).toHaveBeenCalledWith('u1', null);
   });
 
   it('đơn đã thanh toán => huỷ kèm ghi chú hoàn tiền giả lập', async () => {
-    const { service, locked } = setup(OrderStatus.PAID);
-    await service.cancel('u1', 'o1', { reason: 'Đổi ý' });
+    const { service, locked } = lockedSetup(OrderStatus.PAID, new Date());
+    await service.cancel(customerActor, 'o1', { reason: 'Đổi ý' });
     expect(locked?.cancel).toHaveBeenCalledWith(
       'u1',
       'Đổi ý · Hoàn tiền (giả lập)',
@@ -347,8 +372,8 @@ describe('OrdersService.cancel', () => {
   });
 
   it('không có đơn của user này => 404', async () => {
-    const { service } = setup(null);
-    await expect(service.cancel('u1', 'o1', {})).rejects.toThrow(
+    const { service } = lockedSetup(null);
+    await expect(service.cancel(customerActor, 'o1', {})).rejects.toThrow(
       NotFoundException,
     );
   });
@@ -360,10 +385,188 @@ describe('OrdersService.cancel', () => {
     [OrderStatus.SHIPPING, 'Đơn hàng đã được xử lý, không thể huỷ'],
     [OrderStatus.DELIVERED, 'Đơn hàng đã được xử lý, không thể huỷ'],
   ])('đơn đang %s => 409 "%s", không huỷ', async (status, message) => {
-    const { service, locked } = setup(status);
-    const body = await conflictBody(service.cancel('u1', 'o1', {}));
+    const { service, locked } = lockedSetup(status);
+    const body = await conflictBody(service.cancel(customerActor, 'o1', {}));
     expect(body.message).toBe(message);
     expect(locked?.cancel).not.toHaveBeenCalled();
+  });
+});
+
+describe('OrdersService.cancel – nhân viên', () => {
+  it('tìm mọi đơn (không lọc theo chủ đơn)', async () => {
+    const { service, repo } = lockedSetup(OrderStatus.PACKING, new Date());
+    await service.cancel(warehouseActor, 'o1', { reason: 'Hết hàng thật' });
+    expect(repo.withLockedOrder).toHaveBeenCalledWith(
+      'o1',
+      undefined,
+      expect.any(Function),
+    );
+  });
+
+  it.each([undefined, '', 'abc'])(
+    'lý do "%s" (thiếu hoặc dưới 5 ký tự) => 400, không khoá đơn',
+    async (reason) => {
+      const { service, repo } = lockedSetup(OrderStatus.PAID);
+      await expect(
+        service.cancel(warehouseActor, 'o1', { reason }),
+      ).rejects.toThrow(BadRequestException);
+      expect(repo.withLockedOrder).not.toHaveBeenCalled();
+    },
+  );
+
+  it('đơn đang đóng gói, đã thanh toán => huỷ, người huỷ là nhân viên, ghi hoàn tiền', async () => {
+    const { service, locked } = lockedSetup(OrderStatus.PACKING, new Date());
+    await service.cancel(warehouseActor, 'o1', {
+      reason: 'Khách không nghe máy',
+    });
+    expect(locked?.cancel).toHaveBeenCalledWith(
+      's1',
+      'Khách không nghe máy · Hoàn tiền (giả lập)',
+    );
+  });
+
+  it('đơn chưa thanh toán => không ghi hoàn tiền', async () => {
+    const { service, locked } = lockedSetup(OrderStatus.PENDING_PAYMENT);
+    await service.cancel(warehouseActor, 'o1', {
+      reason: 'Đơn nghi ngờ gian lận',
+    });
+    expect(locked?.cancel).toHaveBeenCalledWith('s1', 'Đơn nghi ngờ gian lận');
+  });
+
+  it.each([
+    [OrderStatus.SHIPPING, "Không thể huỷ đơn đang ở trạng thái 'Đang giao'"],
+    [OrderStatus.DELIVERED, "Không thể huỷ đơn đang ở trạng thái 'Đã giao'"],
+    [OrderStatus.CANCELLED, 'Đơn hàng đã bị huỷ'],
+  ])('đơn đang %s => 409 "%s"', async (status, message) => {
+    const { service, locked } = lockedSetup(status, new Date());
+    const body = await conflictBody(
+      service.cancel(warehouseActor, 'o1', { reason: 'Lý do hợp lệ' }),
+    );
+    expect(body.message).toBe(message);
+    expect(locked?.cancel).not.toHaveBeenCalled();
+  });
+});
+
+describe('OrdersService.updateStatus', () => {
+  function withDetail(status: OrderStatus) {
+    const setup = lockedSetup(status, new Date());
+    const order = savedOrder({
+      code: 'SF-261030-AAAA',
+      userId: 'u1',
+      ...dto,
+      shippingFee: new Prisma.Decimal(0),
+      totalAmount: new Prisma.Decimal(500),
+      items: [],
+    });
+    setup.locked?.changeStatus.mockImplementation(async (toStatus) => ({
+      ...order,
+      status: toStatus,
+      items: [],
+      statusHistory: [],
+    }));
+    return setup;
+  }
+
+  it.each([
+    [OrderStatus.PAID, OrderStatus.CONFIRMED],
+    [OrderStatus.CONFIRMED, OrderStatus.PACKING],
+    [OrderStatus.PACKING, OrderStatus.SHIPPING],
+    [OrderStatus.SHIPPING, OrderStatus.DELIVERED],
+  ])('%s -> %s => đổi, ghi người đổi và ghi chú', async (from, to) => {
+    const { service, locked, repo } = withDetail(from);
+    const order = await service.updateStatus(warehouseActor, 'o1', {
+      status: to,
+      note: 'ok',
+    });
+    expect(order.status).toBe(to);
+    expect(locked?.changeStatus).toHaveBeenCalledWith(to, 's1', 'ok');
+    expect(repo.withLockedOrder).toHaveBeenCalledWith(
+      'o1',
+      undefined,
+      expect.any(Function),
+    );
+  });
+
+  it('ghi chú rỗng => null', async () => {
+    const { service, locked } = withDetail(OrderStatus.PAID);
+    await service.updateStatus(warehouseActor, 'o1', {
+      status: OrderStatus.CONFIRMED,
+      note: '',
+    });
+    expect(locked?.changeStatus).toHaveBeenCalledWith(
+      OrderStatus.CONFIRMED,
+      's1',
+      null,
+    );
+  });
+
+  it.each([
+    // nhảy cóc
+    [OrderStatus.PAID, OrderStatus.SHIPPING],
+    // lùi bước
+    [OrderStatus.PACKING, OrderStatus.CONFIRMED],
+    // người khác vừa đổi
+    [OrderStatus.CONFIRMED, OrderStatus.CONFIRMED],
+    // chưa thanh toán
+    [OrderStatus.PENDING_PAYMENT, OrderStatus.CONFIRMED],
+    // đã kết thúc
+    [OrderStatus.DELIVERED, OrderStatus.CANCELLED],
+    // đã huỷ
+    [OrderStatus.CANCELLED, OrderStatus.CONFIRMED],
+  ])('%s -> %s => 409 kèm trạng thái hiện tại', async (from, to) => {
+    const { service, locked } = withDetail(from);
+    const body = await conflictBody(
+      service.updateStatus(warehouseActor, 'o1', { status: to }),
+    );
+    expect(body.message).toMatch(/^Không thể chuyển đơn từ '.+' sang '.+'$/);
+    expect((body as { currentStatus?: string }).currentStatus).toBe(from);
+    expect(locked?.changeStatus).not.toHaveBeenCalled();
+  });
+
+  it('không thấy đơn => 404', async () => {
+    const { service } = lockedSetup(null);
+    await expect(
+      service.updateStatus(warehouseActor, 'o1', {
+        status: OrderStatus.CONFIRMED,
+      }),
+    ).rejects.toThrow(NotFoundException);
+  });
+});
+
+describe('OrdersService.listForStaff', () => {
+  function setup() {
+    const repo = {
+      listForStaff: jest.fn().mockResolvedValue([[], 0]),
+    } as unknown as jest.Mocked<OrdersRepository>;
+    return { repo, service: new OrdersService(repo, config) };
+  }
+  const query = (props: Partial<StaffOrderQueryDto>) =>
+    Object.assign(new StaffOrderQueryDto(), props);
+
+  it('khoảng ngày theo giờ Việt Nam, gồm cả ngày `to`', async () => {
+    const { service, repo } = setup();
+    await service.listForStaff(query({ from: '2026-10-01', to: '2026-10-30' }));
+    expect(repo.listForStaff.mock.calls[0][0].filter).toMatchObject({
+      placedFrom: new Date('2026-09-30T17:00:00Z'),
+      placedBefore: new Date('2026-10-30T17:00:00Z'),
+    });
+  });
+
+  it('from sau to => 400', async () => {
+    const { service } = setup();
+    await expect(
+      service.listForStaff(query({ from: '2026-10-30', to: '2026-10-01' })),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it('sort=oldest => cũ nhất trước; mặc định mới nhất trước', async () => {
+    const { service, repo } = setup();
+    await service.listForStaff(query({ sort: 'oldest' }));
+    await service.listForStaff(query({}));
+    expect(repo.listForStaff.mock.calls.map(([p]) => p.oldestFirst)).toEqual([
+      true,
+      false,
+    ]);
   });
 });
 

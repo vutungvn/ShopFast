@@ -1,5 +1,5 @@
 import { OrderStatus } from '@prisma/client';
-import { customerActions } from './order-rules';
+import { customerActions, nextStatus } from './order-rules';
 
 const HOUR = 60 * 60 * 1000;
 const createdAt = new Date('2026-10-30T08:00:00Z');
@@ -48,4 +48,18 @@ describe('customerActions', () => {
       });
     },
   );
+});
+
+describe('nextStatus', () => {
+  it.each([
+    [OrderStatus.PAID, OrderStatus.CONFIRMED],
+    [OrderStatus.CONFIRMED, OrderStatus.PACKING],
+    [OrderStatus.PACKING, OrderStatus.SHIPPING],
+    [OrderStatus.SHIPPING, OrderStatus.DELIVERED],
+    [OrderStatus.PENDING_PAYMENT, null],
+    [OrderStatus.DELIVERED, null],
+    [OrderStatus.CANCELLED, null],
+  ])('%s => %s', (status, expected) => {
+    expect(nextStatus(status)).toBe(expected);
+  });
 });

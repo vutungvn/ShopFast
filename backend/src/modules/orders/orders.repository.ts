@@ -28,6 +28,16 @@ const detailInclude = {
   },
 } satisfies Prisma.OrderInclude;
 
+const staffListInclude = {
+  ...orderInclude,
+  user: { select: { id: true, fullName: true, email: true } },
+} satisfies Prisma.OrderInclude;
+
+/** Đơn trong danh sách của nhân viên: kèm dòng sản phẩm và khách đặt */
+export type StaffOrder = Prisma.OrderGetPayload<{
+  include: typeof staffListInclude;
+}>;
+
 /** Đơn kèm dòng sản phẩm (có slug để làm link) và lịch sử trạng thái kèm người đổi */
 export type OrderDetail = Prisma.OrderGetPayload<{
   include: typeof detailInclude;
@@ -57,8 +67,26 @@ export type PayResult =
 /** Đơn đã khoá trong transaction: đọc trạng thái rồi đổi mà không bị request khác chen giữa */
 export interface LockedOrder {
   status: OrderStatus;
+  /** Đã thanh toán (kể cả khi đơn đã sang bước xử lý sau) => huỷ phải hoàn tiền */
+  paidAt: Date | null;
   /** Chuyển sang CANCELLED, trả kho mọi dòng, ghi lịch sử. Trả về đơn sau khi huỷ */
   cancel(changedById: string, note: string | null): Promise<OrderWithItems>;
+  /** Đổi sang `toStatus` (bên gọi đã kiểm tra hợp lệ), ghi lịch sử. Trả về chi tiết đơn sau khi đổi */
+  changeStatus(
+    toStatus: OrderStatus,
+    changedById: string,
+    note: string | null,
+  ): Promise<OrderDetail>;
+}
+
+export interface StaffOrderFilter {
+  statuses?: OrderStatus[];
+  /** Đặt từ thời điểm này (gồm) */
+  placedFrom?: Date;
+  /** Đặt trước thời điểm này (không gồm) */
+  placedBefore?: Date;
+  /** Một phần mã đơn hoặc số điện thoại người nhận */
+  q?: string;
 }
 
 /** Các thao tác của MỘT lần đặt đơn, chạy trong transaction đang giữ khoá giỏ của user. */
@@ -107,6 +135,39 @@ export class OrdersRepository {
     ]);
   }
 
+  /** Danh sách cho nhân viên: lọc trạng thái, khoảng ngày đặt, tìm mã đơn / SĐT. Trả về [trang hiện tại, tổng số]. */
+  listForStaff(params: {
+    filter: StaffOrderFilter;
+    oldestFirst: boolean;
+    skip: number;
+    take: number;
+  }): Promise<[StaffOrder[], number]> {
+    const { statuses, placedFrom, placedBefore, q } = params.filter;
+    const where: Prisma.OrderWhereInput = {
+      ...(statuses?.length && { status: { in: statuses } }),
+      ...((placedFrom || placedBefore) && {
+        createdAt: { gte: placedFrom, lt: placedBefore },
+      }),
+      ...(q && {
+        OR: [
+          { code: { contains: q, mode: 'insensitive' } },
+          { recipientPhone: { contains: q } },
+        ],
+      }),
+    };
+    const direction = params.oldestFirst ? 'asc' : 'desc';
+    return this.prisma.$transaction([
+      this.prisma.order.findMany({
+        where,
+        include: staffListInclude,
+        orderBy: [{ createdAt: direction }, { id: 'asc' }],
+        skip: params.skip,
+        take: params.take,
+      }),
+      this.prisma.order.count({ where }),
+    ]);
+  }
+
   /** Chi tiết đơn; truyền `userId` để chỉ tìm trong đơn của user đó (khách), bỏ trống cho nhân viên. */
   findDetail(orderId: string, userId?: string): Promise<OrderDetail | null> {
     return this.prisma.order.findFirst({
@@ -131,21 +192,27 @@ export class OrdersRepository {
   }
 
   /**
-   * Khoá dòng đơn (SELECT ... FOR UPDATE) tới hết transaction rồi chạy `work`; không có đơn của user
-   * này thì `work` nhận null. Huỷ, thanh toán, kho đổi trạng thái trên cùng đơn vì vậy chạy lần lượt:
-   * request đến sau thấy trạng thái mới nhất.
+   * Khoá dòng đơn (SELECT ... FOR UPDATE) tới hết transaction rồi chạy `work`; không thấy đơn thì
+   * `work` nhận null. Truyền `userId` để chỉ tìm trong đơn của user đó (khách), bỏ trống cho nhân viên.
+   * Huỷ, thanh toán, kho đổi trạng thái trên cùng đơn vì vậy chạy lần lượt: request đến sau thấy
+   * trạng thái mới nhất.
    */
   withLockedOrder<T>(
     orderId: string,
-    userId: string,
+    userId: string | undefined,
     work: (order: LockedOrder | null) => Promise<T>,
   ): Promise<T> {
+    const ownedBy = userId
+      ? Prisma.sql`AND "userId" = ${userId}::uuid`
+      : Prisma.empty;
     return this.prisma.$transaction(async (tx) => {
-      const [row] = await tx.$queryRaw<{ status: OrderStatus }[]>`
-        SELECT status FROM orders
-        WHERE id = ${orderId}::uuid AND "userId" = ${userId}::uuid
+      const [row] = await tx.$queryRaw<
+        { status: OrderStatus; paidAt: Date | null }[]
+      >`
+        SELECT status, "paidAt" FROM orders
+        WHERE id = ${orderId}::uuid ${ownedBy}
         FOR UPDATE`;
-      return work(row ? lockedOrder(tx, orderId, row.status) : null);
+      return work(row ? lockedOrder(tx, orderId, row) : null);
     });
   }
 
@@ -198,10 +265,25 @@ export class OrdersRepository {
 function lockedOrder(
   tx: Prisma.TransactionClient,
   orderId: string,
-  status: OrderStatus,
+  { status, paidAt }: { status: OrderStatus; paidAt: Date | null },
 ): LockedOrder {
   return {
     status,
+    paidAt,
+    async changeStatus(toStatus, changedById, note) {
+      // Chỉ đổi trạng thái: tồn kho đã trừ lúc đặt đơn
+      await tx.order.update({
+        where: { id: orderId },
+        data: { status: toStatus },
+      });
+      await tx.orderStatusHistory.create({
+        data: { orderId, fromStatus: status, toStatus, changedById, note },
+      });
+      return tx.order.findUniqueOrThrow({
+        where: { id: orderId },
+        include: detailInclude,
+      });
+    },
     async cancel(changedById, note) {
       await tx.order.update({
         where: { id: orderId },

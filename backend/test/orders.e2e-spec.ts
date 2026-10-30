@@ -718,12 +718,16 @@ describe('Orders – đặt đơn (e2e)', () => {
       expect(await stockOf(o.productId)).toBe(10);
     });
 
-    it('TC31 chưa đăng nhập => 401; nhân viên => 403', async () => {
+    it('TC31 chưa đăng nhập => 401; CSKH => 403; kho/admin không ghi lý do => 400', async () => {
       const o = await placedOrder();
       await http.post(`${API}/orders/${o.orderId}/cancel`).expect(401);
-      for (const role of [Role.WAREHOUSE, Role.SUPPORT, Role.ADMIN]) {
+      const support = await loginAs(Role.SUPPORT);
+      await cancel(support.token, o.orderId, {
+        reason: 'Khách nhờ huỷ',
+      }).expect(403);
+      for (const role of [Role.WAREHOUSE, Role.ADMIN]) {
         const staff = await loginAs(role);
-        await cancel(staff.token, o.orderId).expect(403);
+        await cancel(staff.token, o.orderId).expect(400);
       }
       expect(await stockOf(o.productId)).toBe(7);
     });
@@ -956,6 +960,338 @@ describe('Orders – đặt đơn (e2e)', () => {
       expect(
         asCustomer.body.timeline.some((t: object) => 'changedBy' in t),
       ).toBe(false);
+    });
+  });
+
+  describe('Kho xử lý đơn', () => {
+    const advance = (token: string, orderId: string, body: object) =>
+      http
+        .patch(`${API}/orders/${orderId}/status`)
+        .set(bearer(token))
+        .send(body);
+    const cancel = (token: string, orderId: string, body: object = {}) =>
+      http
+        .post(`${API}/orders/${orderId}/cancel`)
+        .set(bearer(token))
+        .send(body);
+    const pay = (token: string, orderId: string) =>
+      http.post(`${API}/orders/${orderId}/pay`).set(bearer(token)).expect(200);
+    const listStaff = (token: string, query = '') =>
+      http.get(`${API}/orders${query}`).set(bearer(token));
+
+    let warehouse: { id: string; token: string };
+    beforeAll(async () => {
+      warehouse = await loginAs(Role.WAREHOUSE);
+    });
+
+    /** Số điện thoại riêng cho mỗi lần gọi để lọc `q` không lẫn dữ liệu test khác */
+    let phoneSeq = 0;
+    const uniquePhone = () =>
+      `09${String(Date.now() % 1e6).padStart(6, '0')}${String(++phoneSeq).padStart(2, '0')}`;
+
+    /** Đơn 2 món của sản phẩm tồn kho 10 (sau khi đặt còn 8); `paid` = đã thanh toán */
+    async function newOrder({ paid = true, phone = uniquePhone() } = {}) {
+      const c = await customer();
+      const p = await createProduct(250_000, 10);
+      await addToCart(c.token, p, 2);
+      const res = await placeOrder(c.token, {
+        ...SHIPPING,
+        recipientPhone: phone,
+      }).expect(201);
+      const orderId = (res.body as OrderBody).id;
+      if (paid) await pay(c.token, orderId);
+      return {
+        customer: c,
+        productId: p,
+        orderId,
+        code: (res.body as OrderBody).code,
+        phone,
+      };
+    }
+    const statusOf = async (orderId: string) =>
+      (await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status;
+    const historyTo = (orderId: string, toStatus: OrderStatus) =>
+      prisma.orderStatusHistory.count({ where: { orderId, toStatus } });
+
+    it('TC39 kho đẩy đơn từng bước tới DELIVERED: ghi người đổi, ghi chú; tồn kho không đổi', async () => {
+      const o = await newOrder();
+
+      for (const status of [
+        OrderStatus.CONFIRMED,
+        OrderStatus.PACKING,
+        OrderStatus.SHIPPING,
+        OrderStatus.DELIVERED,
+      ]) {
+        const res = await advance(warehouse.token, o.orderId, {
+          status,
+          note: `Bước ${status}`,
+        }).expect(200);
+        expect(res.body.status).toBe(status);
+        const last = res.body.timeline.at(-1);
+        expect(last).toMatchObject({
+          toStatus: status,
+          actor: 'STAFF',
+          note: `Bước ${status}`,
+          changedBy: { id: warehouse.id, role: 'WAREHOUSE' },
+        });
+      }
+
+      expect(await stockOf(o.productId)).toBe(8);
+      // Khách thấy kho đổi trạng thái nhưng không thấy là ai
+      const asCustomer = await http
+        .get(`${API}/orders/${o.orderId}`)
+        .set(bearer(o.customer.token))
+        .expect(200);
+      expect(
+        asCustomer.body.timeline.map((t: { actor: string }) => t.actor),
+      ).toEqual(['CUSTOMER', 'CUSTOMER', 'STAFF', 'STAFF', 'STAFF', 'STAFF']);
+      expect(
+        asCustomer.body.timeline.some((t: object) => 'changedBy' in t),
+      ).toBe(false);
+    });
+
+    it('TC40 bước không hợp lệ => 409 kèm trạng thái hiện tại; dữ liệu sai => 400; không có đơn => 404', async () => {
+      const o = await newOrder();
+      const pending = await newOrder({ paid: false });
+
+      const skip = await advance(warehouse.token, o.orderId, {
+        status: 'SHIPPING',
+      }).expect(409);
+      expect(skip.body).toMatchObject({
+        message: "Không thể chuyển đơn từ 'Đã thanh toán' sang 'Đang giao'",
+        currentStatus: 'PAID',
+      });
+      await advance(warehouse.token, o.orderId, {
+        status: 'PENDING_PAYMENT',
+      }).expect(409);
+      await advance(warehouse.token, o.orderId, { status: 'CANCELLED' }).expect(
+        409,
+      );
+      await advance(warehouse.token, pending.orderId, {
+        status: 'CONFIRMED',
+      }).expect(409);
+
+      await advance(warehouse.token, o.orderId, { status: 'DONE' }).expect(400);
+      await advance(warehouse.token, o.orderId, {
+        status: 'CONFIRMED',
+        note: 'x'.repeat(501),
+      }).expect(400);
+      await advance(warehouse.token, '00000000-0000-4000-8000-000000000000', {
+        status: 'CONFIRMED',
+      }).expect(404);
+
+      expect(await statusOf(o.orderId)).toBe('PAID');
+      expect(await statusOf(pending.orderId)).toBe('PENDING_PAYMENT');
+    });
+
+    it('TC41 hai nhân viên cùng xác nhận một đơn => 1 thành công, 1 nhận 409, chỉ 1 dòng lịch sử (lặp 5 vòng)', async () => {
+      const other = await loginAs(Role.ADMIN);
+      for (let round = 0; round < 5; round++) {
+        const o = await newOrder();
+        const statuses = (
+          await Promise.all([
+            advance(warehouse.token, o.orderId, { status: 'CONFIRMED' }),
+            advance(other.token, o.orderId, { status: 'CONFIRMED' }),
+          ])
+        ).map((r) => r.status);
+
+        expect(statuses.sort()).toEqual([200, 409]);
+        expect(await statusOf(o.orderId)).toBe('CONFIRMED');
+        expect(await historyTo(o.orderId, OrderStatus.CONFIRMED)).toBe(1);
+      }
+    });
+
+    it('TC42 kho xác nhận cùng lúc khách huỷ => chỉ một bên thắng, kho khớp với bên thắng (lặp 5 vòng)', async () => {
+      for (let round = 0; round < 5; round++) {
+        const o = await newOrder();
+        const [confirmRes, cancelRes] = await Promise.all([
+          advance(warehouse.token, o.orderId, { status: 'CONFIRMED' }),
+          cancel(o.customer.token, o.orderId),
+        ]);
+
+        expect([confirmRes.status, cancelRes.status].sort()).toEqual([
+          200, 409,
+        ]);
+        if (confirmRes.status === 200) {
+          expect(cancelRes.body.message).toBe(
+            'Đơn hàng đã được xử lý, không thể huỷ',
+          );
+          expect(await statusOf(o.orderId)).toBe('CONFIRMED');
+          expect(await stockOf(o.productId)).toBe(8);
+        } else {
+          expect(confirmRes.body.currentStatus).toBe('CANCELLED');
+          expect(await statusOf(o.orderId)).toBe('CANCELLED');
+          expect(await stockOf(o.productId)).toBe(10);
+        }
+      }
+    });
+
+    it('TC43 nhân viên huỷ đơn đang đóng gói (bắt buộc lý do) => trả kho, ghi hoàn tiền; đang giao => 409', async () => {
+      const o = await newOrder();
+      await advance(warehouse.token, o.orderId, { status: 'CONFIRMED' }).expect(
+        200,
+      );
+      await advance(warehouse.token, o.orderId, { status: 'PACKING' }).expect(
+        200,
+      );
+
+      await cancel(warehouse.token, o.orderId, { reason: 'abc' }).expect(400);
+      await cancel(warehouse.token, o.orderId, {
+        reason: '  Không liên lạc được khách  ',
+      }).expect(200);
+
+      expect(await stockOf(o.productId)).toBe(10);
+      const last = await prisma.orderStatusHistory.findFirstOrThrow({
+        where: { orderId: o.orderId },
+        orderBy: { createdAt: 'desc' },
+      });
+      expect(last).toMatchObject({
+        fromStatus: 'PACKING',
+        toStatus: 'CANCELLED',
+        changedById: warehouse.id,
+        note: 'Không liên lạc được khách · Hoàn tiền (giả lập)',
+      });
+
+      // Admin huỷ đơn chưa thanh toán: không ghi hoàn tiền
+      const admin = await loginAs(Role.ADMIN);
+      const unpaid = await newOrder({ paid: false });
+      await cancel(admin.token, unpaid.orderId, {
+        reason: 'Đơn đặt thử',
+      }).expect(200);
+      expect(
+        (
+          await prisma.orderStatusHistory.findFirstOrThrow({
+            where: { orderId: unpaid.orderId, toStatus: 'CANCELLED' },
+          })
+        ).note,
+      ).toBe('Đơn đặt thử');
+
+      const shipping = await newOrder();
+      for (const status of ['CONFIRMED', 'PACKING', 'SHIPPING']) {
+        await advance(warehouse.token, shipping.orderId, { status }).expect(
+          200,
+        );
+      }
+      const res = await cancel(warehouse.token, shipping.orderId, {
+        reason: 'Khách đổi ý',
+      }).expect(409);
+      expect(res.body.message).toBe(
+        "Không thể huỷ đơn đang ở trạng thái 'Đang giao'",
+      );
+      expect(await stockOf(shipping.productId)).toBe(8);
+    });
+
+    it('TC44 danh sách cho nhân viên: lọc trạng thái, tìm mã/SĐT, khoảng ngày, sắp xếp, việc làm được tiếp', async () => {
+      const phone = uniquePhone();
+      const first = await newOrder({ phone });
+      const second = await newOrder({ phone, paid: false });
+      const third = await newOrder({ phone });
+      for (const status of ['CONFIRMED', 'PACKING', 'SHIPPING']) {
+        await advance(warehouse.token, third.orderId, { status }).expect(200);
+      }
+
+      const byPhone = await listStaff(warehouse.token, `?q=${phone}`).expect(
+        200,
+      );
+      expect(byPhone.body.items.map((o: { id: string }) => o.id)).toEqual([
+        third.orderId,
+        second.orderId,
+        first.orderId,
+      ]);
+      const oldest = await listStaff(
+        warehouse.token,
+        `?q=${phone}&sort=oldest`,
+      ).expect(200);
+      expect(oldest.body.items[0].id).toBe(first.orderId);
+
+      const [card] = (
+        await listStaff(warehouse.token, `?q=${phone}&status=PAID`).expect(200)
+      ).body.items;
+      expect(card).toMatchObject({
+        id: first.orderId,
+        recipientPhone: phone,
+        customer: { id: first.customer.id },
+        nextStatus: 'CONFIRMED',
+        canStaffCancel: true,
+        itemCount: 1,
+        totalQuantity: 2,
+      });
+      const shipping = (
+        await listStaff(
+          warehouse.token,
+          `?q=${phone}&status=SHIPPING,PENDING_PAYMENT`,
+        ).expect(200)
+      ).body.items;
+      expect(shipping.map((o: { id: string }) => o.id).sort()).toEqual(
+        [second.orderId, third.orderId].sort(),
+      );
+      expect(
+        shipping.find((o: { id: string }) => o.id === third.orderId),
+      ).toMatchObject({
+        nextStatus: 'DELIVERED',
+        canStaffCancel: false,
+      });
+      expect(
+        shipping.find((o: { id: string }) => o.id === second.orderId),
+      ).toMatchObject({
+        nextStatus: null,
+        canStaffCancel: true,
+      });
+
+      // Một phần mã đơn, chữ thường
+      const byCode = await listStaff(
+        warehouse.token,
+        `?q=${first.code.slice(-6).toLowerCase()}`,
+      ).expect(200);
+      expect(byCode.body.items.map((o: { id: string }) => o.id)).toContain(
+        first.orderId,
+      );
+
+      const today = new Date(Date.now() + 7 * 60 * 60_000)
+        .toISOString()
+        .slice(0, 10);
+      const tomorrow = new Date(Date.now() + 31 * 60 * 60_000)
+        .toISOString()
+        .slice(0, 10);
+      const inToday = await listStaff(
+        warehouse.token,
+        `?q=${phone}&from=${today}&to=${today}`,
+      ).expect(200);
+      expect(inToday.body.meta.total).toBe(3);
+      const fromTomorrow = await listStaff(
+        warehouse.token,
+        `?q=${phone}&from=${tomorrow}`,
+      ).expect(200);
+      expect(fromTomorrow.body.meta.total).toBe(0);
+
+      await listStaff(warehouse.token, '?from=2026-02-30').expect(400);
+      await listStaff(warehouse.token, '?from=30-10-2026').expect(400);
+      await listStaff(warehouse.token, '?from=2026-10-30&to=2026-10-01').expect(
+        400,
+      );
+      await listStaff(warehouse.token, '?sort=price').expect(400);
+    });
+
+    it('TC45 phân quyền: khách không xem danh sách / đổi trạng thái; CSKH chỉ xem; không có token => 401', async () => {
+      const o = await newOrder();
+      const support = await loginAs(Role.SUPPORT);
+
+      await listStaff(o.customer.token).expect(403);
+      await advance(o.customer.token, o.orderId, {
+        status: 'CONFIRMED',
+      }).expect(403);
+
+      await listStaff(support.token, `?q=${o.phone}`).expect(200);
+      await advance(support.token, o.orderId, { status: 'CONFIRMED' }).expect(
+        403,
+      );
+
+      await http.get(`${API}/orders`).expect(401);
+      await http
+        .patch(`${API}/orders/${o.orderId}/status`)
+        .send({ status: 'CONFIRMED' })
+        .expect(401);
+      expect(await statusOf(o.orderId)).toBe('PAID');
     });
   });
 });
