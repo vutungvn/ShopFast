@@ -1,4 +1,4 @@
-import { ChevronDown, LogOut, UserRound } from 'lucide-react'
+import { ChevronDown, LogOut, ReceiptText, UserRound } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation } from 'react-router'
 import { PATHS } from '@/app/paths'
@@ -80,6 +80,15 @@ export function UserMenu() {
             <p className="truncate text-sm font-medium text-slate-900">{user.fullName}</p>
             <p className="truncate text-xs text-slate-500">{user.email}</p>
           </div>
+          <Link
+            to={user.role === 'CUSTOMER' ? PATHS.orders : PATHS.staffOrders}
+            role="menuitem"
+            onClick={() => setOpen(false)}
+            className="flex items-center gap-2.5 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50"
+          >
+            <ReceiptText className="size-4 text-slate-400" aria-hidden />
+            {user.role === 'CUSTOMER' ? 'Đơn mua' : 'Quản lý đơn hàng'}
+          </Link>
           <Link
             to={PATHS.account}
             role="menuitem"

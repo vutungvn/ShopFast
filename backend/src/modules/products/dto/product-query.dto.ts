@@ -85,4 +85,10 @@ export class ManageProductQueryDto extends ProductQueryDto {
   @Transform(toBoolean)
   @IsBoolean({ message: 'isActive phải là true hoặc false' })
   isActive?: boolean;
+
+  /** true => chỉ sản phẩm sắp hết (còn 1–5) để lên kế hoạch nhập hàng */
+  @IsOptional()
+  @Transform(toBoolean)
+  @IsBoolean({ message: 'lowStock phải là true hoặc false' })
+  lowStock?: boolean;
 }

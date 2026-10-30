@@ -1,10 +1,11 @@
-import { CircleAlert, CircleCheck, X } from 'lucide-react'
+import { CircleAlert, CircleCheck, TriangleAlert, X } from 'lucide-react'
 import { useEffect, useEffectEvent, type ReactNode } from 'react'
 import { cn } from '@/lib/cn'
 
 const VARIANTS = {
   success: { Icon: CircleCheck, icon: 'text-emerald-600' },
   error: { Icon: CircleAlert, icon: 'text-red-600' },
+  warning: { Icon: TriangleAlert, icon: 'text-amber-600' },
 }
 
 type ToastProps = {

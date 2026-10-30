@@ -8,6 +8,9 @@ import { cn } from '@/lib/cn'
 import { HeaderSearch } from './HeaderSearch'
 import { UserMenu } from './UserMenu'
 
+const navClass = ({ isActive }: { isActive: boolean }) =>
+  cn('text-sm font-medium transition-colors', isActive ? 'text-brand-600' : 'text-slate-600 hover:text-slate-900')
+
 /** Khung chung của các trang mua sắm (công khai lẫn cần đăng nhập): header + nội dung + footer. */
 export function ShopLayout() {
   const { pathname } = useLocation()
@@ -26,19 +29,20 @@ export function ShopLayout() {
             <Logo />
           </Link>
 
-          <nav className="hidden md:block" aria-label="Điều hướng chính">
-            <NavLink
-              to={PATHS.home}
-              end
-              className={({ isActive }) =>
-                cn(
-                  'text-sm font-medium transition-colors',
-                  isActive ? 'text-brand-600' : 'text-slate-600 hover:text-slate-900',
-                )
-              }
-            >
+          <nav className="hidden items-center gap-6 md:flex" aria-label="Điều hướng chính">
+            <NavLink to={PATHS.home} end className={navClass}>
               Sản phẩm
             </NavLink>
+            {/* Khách (người chưa đăng nhập bấm vào sẽ sang đăng nhập) xem đơn mua; nhân viên sang khu quản lý */}
+            {showCart ? (
+              <NavLink to={PATHS.orders} className={navClass}>
+                Đơn mua
+              </NavLink>
+            ) : (
+              <NavLink to={PATHS.staffOrders} className={navClass}>
+                Trang nhân viên
+              </NavLink>
+            )}
           </nav>
 
           <HeaderSearch key={currentQuery} initialQuery={currentQuery} className="hidden max-w-xl flex-1 md:block" />

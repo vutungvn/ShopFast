@@ -1,12 +1,14 @@
 /**
- * Seed dữ liệu danh mục, thương hiệu, sản phẩm.
- *   npm run db:seed                       # 200 sản phẩm (mặc định)
+ * Seed dữ liệu danh mục, thương hiệu, sản phẩm, tài khoản mẫu và đơn hàng.
+ *   npm run db:seed                       # 200 sản phẩm, 20 khách, 120 đơn (mặc định)
  *   SEED_PRODUCTS=1000 npm run db:seed    # số lượng tuỳ chọn
+ *   SEED_CUSTOMERS=50 SEED_ORDERS=300 SEED_PASSWORD=... npm run db:seed
  * Chạy lại an toàn: chỉ thêm bản ghi chưa có (theo slug/SKU), không ghi đè dữ liệu đã sửa.
  * Dữ liệu sinh theo PRNG cố định nên mỗi lần chạy ra cùng một bộ sản phẩm.
  */
 import { PrismaClient } from '@prisma/client';
 import { slugify } from '../src/common/utils/slug';
+import { seedAccountsAndOrders } from './seed-orders';
 
 const prisma = new PrismaClient();
 const PRODUCT_COUNT = Number(process.env.SEED_PRODUCTS ?? 200);
@@ -172,6 +174,14 @@ async function main() {
   console.log(
     `Seed xong: ${leaves.length} danh mục lá, ${brandNames.length} thương hiệu, ` +
       `thêm ${created}/${PRODUCT_COUNT} sản phẩm (phần còn lại đã có sẵn).`,
+  );
+
+  // 4. Tài khoản mẫu + đơn hàng ở đủ các trạng thái
+  const seeded = await seedAccountsAndOrders(prisma, random);
+  console.log(
+    `Tài khoản mẫu (mật khẩu ${seeded.password}): ${seeded.staff.join(', ')}, ` +
+      `khach01..${String(seeded.customers).padStart(2, '0')}@shopfast.vn. ` +
+      `Thêm ${seeded.created} đơn hàng, bỏ qua ${seeded.skipped} đơn đã có.`,
   );
 }
 

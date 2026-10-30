@@ -65,6 +65,8 @@ describe('ProductsService', () => {
       findBySlug: jest.fn().mockResolvedValue(product),
       create: jest.fn().mockResolvedValue(product),
       update: jest.fn().mockResolvedValue(product),
+      setStock: jest.fn(),
+      adjustStock: jest.fn().mockResolvedValue({ ok: true }),
     } as unknown as jest.Mocked<ProductsRepository>;
     categories = {
       findIdsWithDescendants: jest.fn(),
@@ -233,6 +235,44 @@ describe('ProductsService', () => {
         'p1',
         expect.objectContaining({ price: 19990000, name: undefined }),
       );
+    });
+  });
+
+  describe('updateInventory', () => {
+    it.each([
+      { name: 'không gửi gì', dto: {} },
+      { name: 'gửi cả hai', dto: { stock: 5, delta: 1 } },
+    ])('$name => 400, không đụng tới tồn kho', async ({ dto }) => {
+      await expect(service.updateInventory('p1', dto)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(repo.setStock).not.toHaveBeenCalled();
+      expect(repo.adjustStock).not.toHaveBeenCalled();
+    });
+
+    it('sản phẩm không tồn tại => 404', async () => {
+      repo.findById.mockResolvedValue(null);
+      await expect(
+        service.updateInventory('p404', { stock: 1 }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('stock => đặt lại số tồn, trả sản phẩm sau khi đổi', async () => {
+      const res = await service.updateInventory('p1', { stock: 0 });
+      expect(repo.setStock).toHaveBeenCalledWith('p1', 0);
+      expect(res.id).toBe('p1');
+    });
+
+    it('delta => cộng/trừ nguyên tử', async () => {
+      await service.updateInventory('p1', { delta: -3 });
+      expect(repo.adjustStock).toHaveBeenCalledWith('p1', -3);
+    });
+
+    it('trừ quá số đang có => 409 nêu số còn lại', async () => {
+      repo.adjustStock.mockResolvedValue({ ok: false, stock: 2 });
+      const err = service.updateInventory('p1', { delta: -5 });
+      await expect(err).rejects.toThrow(ConflictException);
+      await expect(err).rejects.toThrow('Không đủ tồn kho để trừ 5 (còn 2)');
     });
   });
 });

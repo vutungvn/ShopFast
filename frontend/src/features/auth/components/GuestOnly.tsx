@@ -1,7 +1,7 @@
 import { Navigate, Outlet, useLocation } from 'react-router'
-import { PATHS } from '@/app/paths'
 import { SplashScreen } from '@/components/layout/SplashScreen'
 import { useAuth } from '../auth-context'
+import { homePathFor } from '../roles'
 import type { LoginPageState } from '../types'
 
 /**
@@ -9,10 +9,11 @@ import type { LoginPageState } from '../types'
  * Đăng nhập thành công cũng đi qua đây: chuyển về trang định vào trước đó.
  */
 export function GuestOnly() {
-  const { status } = useAuth()
+  const { status, user } = useAuth()
   const state = useLocation().state as LoginPageState | null
 
   if (status === 'loading') return <SplashScreen />
-  if (status === 'authenticated') return <Navigate to={state?.from ?? PATHS.home} replace />
+  // Không có trang định vào trước đó: khách về cửa hàng, nhân viên về quản lý đơn
+  if (status === 'authenticated') return <Navigate to={state?.from ?? homePathFor(user.role)} replace />
   return <Outlet />
 }

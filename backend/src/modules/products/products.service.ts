@@ -14,7 +14,9 @@ import {
   ManageProductQueryDto,
   ProductQueryDto,
 } from './dto/product-query.dto';
+import { InventoryStatsDto } from './dto/inventory-stats.dto';
 import { ProductResponseDto } from './dto/product-response.dto';
+import { UpdateInventoryDto } from './dto/update-inventory.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import {
   ProductsRepository,
@@ -40,7 +42,7 @@ export class ProductsService {
   listForStaff(
     query: ManageProductQueryDto,
   ): Promise<PaginatedResult<ProductResponseDto>> {
-    return this.search(query, query.isActive);
+    return this.search(query, query.isActive, query.lowStock);
   }
 
   async getBySlug(slug: string): Promise<ProductResponseDto> {
@@ -77,6 +79,38 @@ export class ProductsService {
     return ProductResponseDto.from(product);
   }
 
+  /**
+   * Kho cập nhật tồn kho: đặt lại (`stock`) hoặc cộng/trừ (`delta`). Sản phẩm ngừng bán vẫn sửa được
+   * (tồn kho tách biệt với trạng thái bán). Giá vẫn do ADMIN sửa ở `update`.
+   */
+  async updateInventory(
+    id: string,
+    dto: UpdateInventoryDto,
+  ): Promise<ProductResponseDto> {
+    if ((dto.stock === undefined) === (dto.delta === undefined)) {
+      throw new BadRequestException(
+        'Gửi đúng một trong hai: stock (đặt lại số tồn) hoặc delta (cộng/trừ)',
+      );
+    }
+    if (!(await this.products.findById(id))) {
+      throw new NotFoundException('Không tìm thấy sản phẩm');
+    }
+
+    if (dto.stock !== undefined) {
+      await this.products.setStock(id, dto.stock);
+    } else {
+      const delta = dto.delta!;
+      const result = await this.products.adjustStock(id, delta);
+      if (!result.ok) {
+        throw new ConflictException(
+          `Không đủ tồn kho để trừ ${-delta} (còn ${result.stock})`,
+        );
+      }
+    }
+    // Giai đoạn 3: làm mới cache sản phẩm tại đây khi tồn kho đổi
+    return ProductResponseDto.from((await this.products.findById(id))!);
+  }
+
   async update(id: string, dto: UpdateProductDto): Promise<ProductResponseDto> {
     if (!(await this.products.findById(id))) {
       throw new NotFoundException('Không tìm thấy sản phẩm');
@@ -97,9 +131,15 @@ export class ProductsService {
     return ProductResponseDto.from(product);
   }
 
+  /** Số liệu tồn kho cho nhân viên: tổng, sắp hết, hết hàng, ngừng bán */
+  stockStats(): Promise<InventoryStatsDto> {
+    return this.products.stockStats();
+  }
+
   private async search(
     query: ProductQueryDto,
     isActive: boolean | undefined,
+    lowStock?: boolean,
   ): Promise<PaginatedResult<ProductResponseDto>> {
     if (
       query.minPrice !== undefined &&
@@ -126,6 +166,7 @@ export class ProductsService {
         inStock: query.inStock,
         q: query.q,
         isActive,
+        lowStock,
       },
       sort: query.sort,
       skip: query.skip,

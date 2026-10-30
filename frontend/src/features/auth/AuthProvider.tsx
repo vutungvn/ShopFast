@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { refreshAccessToken, setAccessToken, setSessionExpiredHandler } from '@/api/client'
 import { queryClient } from '@/app/queryClient'
 import { CART_QUERY_KEY } from '@/features/cart/queries'
+import { ORDERS_QUERY_KEY } from '@/features/orders/queries'
 import { authApi } from './api'
 import { AuthContext, type AuthState } from './auth-context'
 
@@ -62,4 +63,5 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 /** Bỏ dữ liệu riêng của người dùng khỏi cache khi rời phiên */
 function clearPrivateData() {
   queryClient.removeQueries({ queryKey: CART_QUERY_KEY })
+  queryClient.removeQueries({ queryKey: ORDERS_QUERY_KEY })
 }
