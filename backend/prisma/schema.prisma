@@ -210,7 +210,12 @@ model Order {
   code            String      @unique
   userId          String      @db.Uuid
   status          OrderStatus @default(PENDING_PAYMENT)
+  /// Tổng tiền hàng + phí vận chuyển (VND)
   totalAmount     Decimal     @db.Decimal(12, 2)
+  /// Chưa tính phí vận chuyển: tạm là 0
+  shippingFee     Decimal     @default(0) @db.Decimal(12, 2)
+  recipientName   String
+  recipientPhone  String
   shippingAddress String
   paidAt          DateTime?
   cancelledAt     DateTime?

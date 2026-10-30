@@ -20,6 +20,22 @@ export interface LockedCart {
   setQuantity(productId: string, quantity: number): Promise<void>;
 }
 
+/** Một dòng trong giỏ kèm thông tin sản phẩm cần cho bước đặt đơn */
+export interface CheckoutLine {
+  productId: string;
+  productName: string;
+  price: Prisma.Decimal;
+  isActive: boolean;
+  quantity: number;
+}
+
+/** Giỏ đã khoá trong transaction đặt đơn */
+export interface CheckoutCart {
+  /** Sắp theo productId: bước trừ kho khoá các dòng tồn kho theo cùng một thứ tự để không deadlock */
+  lines(): Promise<CheckoutLine[]>;
+  clear(): Promise<void>;
+}
+
 @Injectable()
 export class CartRepository {
   constructor(private readonly prisma: PrismaService) {}
@@ -58,6 +74,46 @@ export class CartRepository {
       // Các thao tác trên cùng một giỏ xếp hàng chờ khoá: cho chờ lâu hơn mặc định (2s/5s)
       { maxWait: 10_000, timeout: 15_000 },
     );
+  }
+
+  /**
+   * Dùng trong transaction đặt đơn: khoá dòng giỏ của user (cùng khoá với withLockedCart) nên đặt đơn
+   * và sửa giỏ chạy lần lượt; hai lần bấm đặt đơn cũng vậy, lần sau thấy giỏ đã trống.
+   * User chưa có giỏ thì trả giỏ rỗng, không tạo giỏ.
+   */
+  async lockForCheckout(
+    tx: Prisma.TransactionClient,
+    userId: string,
+  ): Promise<CheckoutCart> {
+    const [locked] = await tx.$queryRaw<{ id: string }[]>`
+      SELECT id FROM carts WHERE "userId" = ${userId}::uuid FOR UPDATE`;
+    if (!locked) return { lines: async () => [], clear: async () => {} };
+
+    const cartId = locked.id;
+    return {
+      async lines() {
+        const items = await tx.cartItem.findMany({
+          where: { cartId },
+          select: {
+            quantity: true,
+            product: {
+              select: { id: true, name: true, price: true, isActive: true },
+            },
+          },
+          orderBy: { productId: 'asc' },
+        });
+        return items.map(({ quantity, product }) => ({
+          productId: product.id,
+          productName: product.name,
+          price: product.price,
+          isActive: product.isActive,
+          quantity,
+        }));
+      },
+      async clear() {
+        await tx.cartItem.deleteMany({ where: { cartId } });
+      },
+    };
   }
 
   /** Trả về số dòng đã xoá (0 nếu sản phẩm không có trong giỏ). Không tạo giỏ. */
