@@ -15,6 +15,7 @@ import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { JwtAuthGuard } from '../../common/auth/jwt-auth.guard';
 import { Roles } from '../../common/auth/roles.decorator';
 import { RolesGuard } from '../../common/auth/roles.guard';
+import { CancelOrderDto } from './dto/cancel-order.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderResponseDto } from './dto/order-response.dto';
 import { OrdersService } from './orders.service';
@@ -52,5 +53,21 @@ export class OrdersController {
     @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
   ): Promise<OrderResponseDto> {
     return this.orders.pay(user.id, id);
+  }
+
+  /**
+   * Khách huỷ đơn của mình khi đơn còn chờ thanh toán / đã thanh toán (đã thanh toán = hoàn tiền giả lập).
+   * Hàng được trả lại kho ngay. Kho đã xác nhận trở đi hoặc đơn đã huỷ => 409; không có đơn => 404.
+   */
+  @Post(':id/cancel')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.CUSTOMER)
+  cancel(
+    @CurrentUser() user: AuthUser,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() dto: CancelOrderDto,
+  ): Promise<OrderResponseDto> {
+    return this.orders.cancel(user.id, id, dto);
   }
 }

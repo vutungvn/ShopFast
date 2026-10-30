@@ -6,6 +6,7 @@ import { CheckoutLine } from '../cart/cart.repository';
 import { CreateOrderDto } from './dto/create-order.dto';
 import {
   Checkout,
+  LockedOrder,
   NewOrder,
   OrderWithItems,
   OrdersRepository,
@@ -294,5 +295,72 @@ describe('OrdersService.pay', () => {
     const { service } = setup({ paid: false, current: { status } });
     const body = await conflictBody(service.pay('u1', 'o1'));
     expect(body.message).toBe(message);
+  });
+});
+
+describe('OrdersService.cancel', () => {
+  /** Đơn khoá giả ở trạng thái cho trước; null = không có đơn của user này */
+  function setup(status: OrderStatus | null) {
+    const cancelled = {
+      ...savedOrder({
+        code: 'SF-261030-AAAA',
+        userId: 'u1',
+        ...dto,
+        shippingFee: new Prisma.Decimal(0),
+        totalAmount: new Prisma.Decimal(500),
+        items: [],
+      }),
+      status: OrderStatus.CANCELLED,
+      cancelledAt: new Date(),
+    };
+    const locked: jest.Mocked<LockedOrder> | null = status
+      ? { status, cancel: jest.fn().mockResolvedValue(cancelled) }
+      : null;
+    const repo = {
+      withLockedOrder: jest.fn((_id, _userId, work) => work(locked)),
+    } as unknown as jest.Mocked<OrdersRepository>;
+    return { locked, repo, service: new OrdersService(repo, config) };
+  }
+
+  it('đơn chờ thanh toán => huỷ, ghi lý do khách nhập', async () => {
+    const { service, locked } = setup(OrderStatus.PENDING_PAYMENT);
+    const order = await service.cancel('u1', 'o1', { reason: 'Đặt nhầm' });
+    expect(order.status).toBe(OrderStatus.CANCELLED);
+    expect(locked?.cancel).toHaveBeenCalledWith('u1', 'Đặt nhầm');
+  });
+
+  it('không nhập lý do (hoặc chỉ khoảng trắng đã bị cắt) => note null', async () => {
+    const { service, locked } = setup(OrderStatus.PENDING_PAYMENT);
+    await service.cancel('u1', 'o1', { reason: '' });
+    expect(locked?.cancel).toHaveBeenCalledWith('u1', null);
+  });
+
+  it('đơn đã thanh toán => huỷ kèm ghi chú hoàn tiền giả lập', async () => {
+    const { service, locked } = setup(OrderStatus.PAID);
+    await service.cancel('u1', 'o1', { reason: 'Đổi ý' });
+    expect(locked?.cancel).toHaveBeenCalledWith(
+      'u1',
+      'Đổi ý · Hoàn tiền (giả lập)',
+    );
+  });
+
+  it('không có đơn của user này => 404', async () => {
+    const { service } = setup(null);
+    await expect(service.cancel('u1', 'o1', {})).rejects.toThrow(
+      NotFoundException,
+    );
+  });
+
+  it.each([
+    [OrderStatus.CANCELLED, 'Đơn hàng đã bị huỷ'],
+    [OrderStatus.CONFIRMED, 'Đơn hàng đã được xử lý, không thể huỷ'],
+    [OrderStatus.PACKING, 'Đơn hàng đã được xử lý, không thể huỷ'],
+    [OrderStatus.SHIPPING, 'Đơn hàng đã được xử lý, không thể huỷ'],
+    [OrderStatus.DELIVERED, 'Đơn hàng đã được xử lý, không thể huỷ'],
+  ])('đơn đang %s => 409 "%s", không huỷ', async (status, message) => {
+    const { service, locked } = setup(status);
+    const body = await conflictBody(service.cancel('u1', 'o1', {}));
+    expect(body.message).toBe(message);
+    expect(locked?.cancel).not.toHaveBeenCalled();
   });
 });

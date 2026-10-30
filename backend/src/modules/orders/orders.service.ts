@@ -8,6 +8,7 @@ import { OrderStatus, Prisma } from '@prisma/client';
 import { Env } from '../../config/env.validation';
 import { uniqueViolationFields } from '../../common/prisma/prisma-errors';
 import { CartIssue } from '../cart/dto/cart-response.dto';
+import { CancelOrderDto } from './dto/cancel-order.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { CheckoutProblemDto, OrderResponseDto } from './dto/order-response.dto';
 import { generateOrderCode } from './order-code';
@@ -20,6 +21,12 @@ import {
 
 /** Số lần tạo lại mã khi trùng; 32^4 mã/ngày nên trùng 3 lần liên tiếp gần như không thể */
 const MAX_CODE_ATTEMPTS = 3;
+
+/** Khách chỉ huỷ được khi kho chưa xác nhận đơn */
+const CUSTOMER_CANCELLABLE: OrderStatus[] = [
+  OrderStatus.PENDING_PAYMENT,
+  OrderStatus.PAID,
+];
 
 const ISSUE_LABELS: Record<CartIssue, (stock: number) => string> = {
   [CartIssue.INACTIVE]: () => 'ngừng bán',
@@ -64,6 +71,34 @@ export class OrdersService {
     const result = await this.orders.markPaid(orderId, userId, placedAfter);
     if (result.paid) return OrderResponseDto.from(result.order);
     throw paymentError(result.current);
+  }
+
+  /** Khách huỷ đơn của mình khi đơn còn PENDING_PAYMENT / PAID; trả kho trong cùng transaction. */
+  async cancel(
+    userId: string,
+    orderId: string,
+    dto: CancelOrderDto,
+  ): Promise<OrderResponseDto> {
+    const order = await this.orders.withLockedOrder(
+      orderId,
+      userId,
+      async (locked) => {
+        if (!locked) throw new NotFoundException('Không tìm thấy đơn hàng');
+        if (locked.status === OrderStatus.CANCELLED) {
+          throw new ConflictException('Đơn hàng đã bị huỷ');
+        }
+        if (!CUSTOMER_CANCELLABLE.includes(locked.status)) {
+          throw new ConflictException('Đơn hàng đã được xử lý, không thể huỷ');
+        }
+        const notes = [
+          dto.reason,
+          // Đã thanh toán: hoàn tiền chỉ là ghi chú, chưa có cổng thanh toán thật
+          locked.status === OrderStatus.PAID ? 'Hoàn tiền (giả lập)' : null,
+        ].filter(Boolean);
+        return locked.cancel(userId, notes.length ? notes.join(' · ') : null);
+      },
+    );
+    return OrderResponseDto.from(order);
   }
 
   private async checkout(

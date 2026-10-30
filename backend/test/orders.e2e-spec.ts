@@ -1,7 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
-import { Role } from '@prisma/client';
+import { OrderStatus, Role } from '@prisma/client';
 import { hash } from 'bcryptjs';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
@@ -570,6 +570,162 @@ describe('Orders – đặt đơn (e2e)', () => {
         const staff = await loginAs(role);
         await pay(staff.token, o.orderId).expect(403);
       }
+    });
+  });
+
+  describe('Khách huỷ đơn', () => {
+    const cancel = (token: string, orderId: string, body: object = {}) =>
+      http
+        .post(`${API}/orders/${orderId}/cancel`)
+        .set(bearer(token))
+        .send(body);
+    const pay = (token: string, orderId: string) =>
+      http.post(`${API}/orders/${orderId}/pay`).set(bearer(token));
+
+    /** Khách mới đặt 3 món của một sản phẩm tồn kho 10 => sau khi đặt kho còn 7 */
+    async function placedOrder() {
+      const c = await customer();
+      const p = await createProduct(300_000, 10);
+      await addToCart(c.token, p, 3);
+      const res = await placeOrder(c.token).expect(201);
+      return { ...c, productId: p, orderId: (res.body as OrderBody).id };
+    }
+    const lastHistory = (orderId: string) =>
+      prisma.orderStatusHistory.findFirstOrThrow({
+        where: { orderId },
+        orderBy: { createdAt: 'desc' },
+      });
+    const setStatus = (orderId: string, status: OrderStatus) =>
+      prisma.order.update({ where: { id: orderId }, data: { status } });
+
+    it('TC23 huỷ đơn chờ thanh toán => 200 CANCELLED, trả đủ kho, ghi lịch sử kèm lý do', async () => {
+      const o = await placedOrder();
+      expect(await stockOf(o.productId)).toBe(7);
+
+      const res = await cancel(o.token, o.orderId, {
+        reason: '  Đặt nhầm màu  ',
+      }).expect(200);
+
+      expect(res.body).toMatchObject({ id: o.orderId, status: 'CANCELLED' });
+      expect(res.body.cancelledAt).not.toBeNull();
+      expect(await stockOf(o.productId)).toBe(10);
+      expect(await lastHistory(o.orderId)).toMatchObject({
+        fromStatus: 'PENDING_PAYMENT',
+        toStatus: 'CANCELLED',
+        changedById: o.id,
+        note: 'Đặt nhầm màu',
+      });
+    });
+
+    it('TC24 huỷ đơn đã thanh toán => 200, ghi chú hoàn tiền giả lập; không gửi body vẫn được', async () => {
+      const o = await placedOrder();
+      await pay(o.token, o.orderId).expect(200);
+
+      await http
+        .post(`${API}/orders/${o.orderId}/cancel`)
+        .set(bearer(o.token))
+        .expect(200);
+
+      expect(await stockOf(o.productId)).toBe(10);
+      expect(await lastHistory(o.orderId)).toMatchObject({
+        fromStatus: 'PAID',
+        toStatus: 'CANCELLED',
+        note: 'Hoàn tiền (giả lập)',
+      });
+    });
+
+    it('TC25 huỷ lần 2 => 409 "đã bị huỷ", kho không cộng thêm', async () => {
+      const o = await placedOrder();
+      await cancel(o.token, o.orderId).expect(200);
+
+      const res = await cancel(o.token, o.orderId).expect(409);
+
+      expect(res.body.message).toBe('Đơn hàng đã bị huỷ');
+      expect(await stockOf(o.productId)).toBe(10);
+    });
+
+    it('TC26 bấm huỷ 2 lần cùng lúc => 1 thành công, kho chỉ cộng 1 lần (lặp 5 vòng)', async () => {
+      for (let round = 0; round < 5; round++) {
+        const o = await placedOrder();
+        const statuses = (
+          await Promise.all([
+            cancel(o.token, o.orderId),
+            cancel(o.token, o.orderId),
+          ])
+        ).map((r) => r.status);
+
+        expect(statuses.sort()).toEqual([200, 409]);
+        expect(await stockOf(o.productId)).toBe(10);
+      }
+    });
+
+    it('TC27 huỷ cùng lúc thanh toán => đơn luôn kết thúc CANCELLED, kho trả đúng 1 lần (lặp 5 vòng)', async () => {
+      for (let round = 0; round < 5; round++) {
+        const o = await placedOrder();
+        const [payRes, cancelRes] = await Promise.all([
+          pay(o.token, o.orderId),
+          cancel(o.token, o.orderId),
+        ]);
+
+        // PAID vẫn huỷ được nên huỷ luôn thành công; thanh toán thắng hay thua tuỳ ai tới trước
+        expect(cancelRes.status).toBe(200);
+        expect([200, 409]).toContain(payRes.status);
+        const order = await prisma.order.findUniqueOrThrow({
+          where: { id: o.orderId },
+        });
+        expect(order.status).toBe('CANCELLED');
+        expect(await stockOf(o.productId)).toBe(10);
+      }
+    });
+
+    it.each([
+      OrderStatus.CONFIRMED,
+      OrderStatus.PACKING,
+      OrderStatus.SHIPPING,
+      OrderStatus.DELIVERED,
+    ])(
+      'TC28 đơn đang %s => 409 "đã được xử lý", kho giữ nguyên',
+      async (status) => {
+        const o = await placedOrder();
+        await setStatus(o.orderId, status);
+
+        const res = await cancel(o.token, o.orderId).expect(409);
+
+        expect(res.body.message).toBe('Đơn hàng đã được xử lý, không thể huỷ');
+        expect(await stockOf(o.productId)).toBe(7);
+      },
+    );
+
+    it('TC29 đơn của khách khác => 404; lý do quá 500 ký tự => 400; id sai => 400', async () => {
+      const o = await placedOrder();
+      const other = await customer();
+
+      await cancel(other.token, o.orderId).expect(404);
+      await cancel(o.token, o.orderId, { reason: 'x'.repeat(501) }).expect(400);
+      await cancel(o.token, 'abc').expect(400);
+      expect(await stockOf(o.productId)).toBe(7);
+    });
+
+    it('TC30 sản phẩm đã ngừng bán => vẫn được trả kho', async () => {
+      const o = await placedOrder();
+      await prisma.product.update({
+        where: { id: o.productId },
+        data: { isActive: false },
+      });
+
+      await cancel(o.token, o.orderId).expect(200);
+
+      expect(await stockOf(o.productId)).toBe(10);
+    });
+
+    it('TC31 chưa đăng nhập => 401; nhân viên => 403', async () => {
+      const o = await placedOrder();
+      await http.post(`${API}/orders/${o.orderId}/cancel`).expect(401);
+      for (const role of [Role.WAREHOUSE, Role.SUPPORT, Role.ADMIN]) {
+        const staff = await loginAs(role);
+        await cancel(staff.token, o.orderId).expect(403);
+      }
+      expect(await stockOf(o.productId)).toBe(7);
     });
   });
 });

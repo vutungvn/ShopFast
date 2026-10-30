@@ -36,6 +36,13 @@ export type PayResult =
   | { paid: true; order: OrderWithItems }
   | { paid: false; current: { status: OrderStatus } | null };
 
+/** Đơn đã khoá trong transaction: đọc trạng thái rồi đổi mà không bị request khác chen giữa */
+export interface LockedOrder {
+  status: OrderStatus;
+  /** Chuyển sang CANCELLED, trả kho mọi dòng, ghi lịch sử. Trả về đơn sau khi huỷ */
+  cancel(changedById: string, note: string | null): Promise<OrderWithItems>;
+}
+
 /** Các thao tác của MỘT lần đặt đơn, chạy trong transaction đang giữ khoá giỏ của user. */
 export interface Checkout {
   cartLines(): Promise<CheckoutLine[]>;
@@ -71,6 +78,25 @@ export class OrdersRepository {
       // Xếp hàng sau các thao tác khác trên cùng giỏ: chờ lâu hơn mặc định (2s/5s) như giỏ hàng
       { maxWait: 10_000, timeout: 15_000 },
     );
+  }
+
+  /**
+   * Khoá dòng đơn (SELECT ... FOR UPDATE) tới hết transaction rồi chạy `work`; không có đơn của user
+   * này thì `work` nhận null. Huỷ, thanh toán, kho đổi trạng thái trên cùng đơn vì vậy chạy lần lượt:
+   * request đến sau thấy trạng thái mới nhất.
+   */
+  withLockedOrder<T>(
+    orderId: string,
+    userId: string,
+    work: (order: LockedOrder | null) => Promise<T>,
+  ): Promise<T> {
+    return this.prisma.$transaction(async (tx) => {
+      const [row] = await tx.$queryRaw<{ status: OrderStatus }[]>`
+        SELECT status FROM orders
+        WHERE id = ${orderId}::uuid AND "userId" = ${userId}::uuid
+        FOR UPDATE`;
+      return work(row ? lockedOrder(tx, orderId, row.status) : null);
+    });
   }
 
   /**
@@ -117,6 +143,48 @@ export class OrdersRepository {
       return { paid: true, order };
     });
   }
+}
+
+function lockedOrder(
+  tx: Prisma.TransactionClient,
+  orderId: string,
+  status: OrderStatus,
+): LockedOrder {
+  return {
+    status,
+    async cancel(changedById, note) {
+      await tx.order.update({
+        where: { id: orderId },
+        data: { status: OrderStatus.CANCELLED, cancelledAt: new Date() },
+      });
+      // Trả kho theo thứ tự productId như lúc đặt đơn để không deadlock khi đặt và huỷ chạy cùng lúc.
+      // Sản phẩm đã ngừng bán vẫn được cộng lại: tồn kho tách biệt với trạng thái bán.
+      const items = await tx.orderItem.findMany({
+        where: { orderId },
+        select: { productId: true, quantity: true },
+        orderBy: { productId: 'asc' },
+      });
+      for (const { productId, quantity } of items) {
+        await tx.inventory.update({
+          where: { productId },
+          data: { stock: { increment: quantity } },
+        });
+      }
+      await tx.orderStatusHistory.create({
+        data: {
+          orderId,
+          fromStatus: status,
+          toStatus: OrderStatus.CANCELLED,
+          changedById,
+          note,
+        },
+      });
+      return tx.order.findUniqueOrThrow({
+        where: { id: orderId },
+        include: orderInclude,
+      });
+    },
+  };
 }
 
 function checkout(tx: Prisma.TransactionClient, cart: CheckoutCart): Checkout {
