@@ -1,4 +1,13 @@
-import { Body, Controller, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  HttpCode,
+  HttpStatus,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
 import { AuthUser } from '../../common/auth/auth-user';
@@ -28,5 +37,20 @@ export class OrdersController {
     @Body() dto: CreateOrderDto,
   ): Promise<OrderResponseDto> {
     return this.orders.placeOrder(user.id, dto);
+  }
+
+  /**
+   * Thanh toán giả lập đơn PENDING_PAYMENT của chính mình (chỉ khách hàng). Đơn đã thanh toán, đã huỷ
+   * hoặc quá hạn thanh toán => 409; đơn không tồn tại hoặc của người khác => 404.
+   */
+  @Post(':id/pay')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.CUSTOMER)
+  pay(
+    @CurrentUser() user: AuthUser,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+  ): Promise<OrderResponseDto> {
+    return this.orders.pay(user.id, id);
   }
 }

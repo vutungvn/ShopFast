@@ -18,6 +18,13 @@ export const envSchema = z.object({
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(7),
   BCRYPT_SALT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12),
 
+  // Đơn chưa thanh toán sau khoảng này thì không thanh toán được nữa và bị tự huỷ (trả kho)
+  ORDER_PAYMENT_TIMEOUT_MINUTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(24 * 60),
+
   SWAGGER_ENABLED: z
     .enum(['true', 'false'])
     .default('true')

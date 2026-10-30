@@ -31,6 +31,11 @@ export interface NewOrder {
   }>;
 }
 
+/** Kết quả thanh toán: không thanh toán được thì kèm trạng thái hiện tại (null = không có đơn của user này) */
+export type PayResult =
+  | { paid: true; order: OrderWithItems }
+  | { paid: false; current: { status: OrderStatus } | null };
+
 /** Các thao tác của MỘT lần đặt đơn, chạy trong transaction đang giữ khoá giỏ của user. */
 export interface Checkout {
   cartLines(): Promise<CheckoutLine[]>;
@@ -66,6 +71,51 @@ export class OrdersRepository {
       // Xếp hàng sau các thao tác khác trên cùng giỏ: chờ lâu hơn mặc định (2s/5s) như giỏ hàng
       { maxWait: 10_000, timeout: 15_000 },
     );
+  }
+
+  /**
+   * Chuyển PENDING_PAYMENT -> PAID nếu đơn thuộc user và đặt sau `placedAfter` (chưa quá hạn).
+   * Điều kiện nằm ngay trong câu UPDATE: thanh toán 2 lần, thanh toán cùng lúc huỷ đơn hay job tự huỷ
+   * thì dòng đơn bị khoá, request đến sau thấy trạng thái đã đổi và cập nhật 0 dòng.
+   */
+  markPaid(
+    orderId: string,
+    userId: string,
+    placedAfter: Date,
+  ): Promise<PayResult> {
+    return this.prisma.$transaction(async (tx) => {
+      const { count } = await tx.order.updateMany({
+        where: {
+          id: orderId,
+          userId,
+          status: OrderStatus.PENDING_PAYMENT,
+          createdAt: { gt: placedAfter },
+        },
+        data: { status: OrderStatus.PAID, paidAt: new Date() },
+      });
+      if (count === 0) {
+        const current = await tx.order.findFirst({
+          where: { id: orderId, userId },
+          select: { status: true },
+        });
+        return { paid: false, current };
+      }
+
+      await tx.orderStatusHistory.create({
+        data: {
+          orderId,
+          fromStatus: OrderStatus.PENDING_PAYMENT,
+          toStatus: OrderStatus.PAID,
+          changedById: userId,
+          note: 'Thanh toán (giả lập)',
+        },
+      });
+      const order = await tx.order.findUniqueOrThrow({
+        where: { id: orderId },
+        include: orderInclude,
+      });
+      return { paid: true, order };
+    });
   }
 }
 

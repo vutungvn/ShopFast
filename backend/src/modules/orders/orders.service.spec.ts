@@ -1,5 +1,7 @@
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { OrderStatus, Prisma } from '@prisma/client';
+import { Env } from '../../config/env.validation';
 import { CheckoutLine } from '../cart/cart.repository';
 import { CreateOrderDto } from './dto/create-order.dto';
 import {
@@ -7,6 +9,7 @@ import {
   NewOrder,
   OrderWithItems,
   OrdersRepository,
+  PayResult,
 } from './orders.repository';
 import { OrdersService } from './orders.service';
 
@@ -53,6 +56,11 @@ function savedOrder(order: NewOrder): OrderWithItems {
   };
 }
 
+const TIMEOUT_MINUTES = 60;
+const config = {
+  get: () => TIMEOUT_MINUTES,
+} as unknown as ConfigService<Env, true>;
+
 /** Transaction giả: tồn kho trong bộ nhớ thay cho DB thật */
 function fakeCheckout(lines: CheckoutLine[], stock: Record<string, number>) {
   const inventory = new Map(Object.entries(stock));
@@ -70,7 +78,12 @@ function fakeCheckout(lines: CheckoutLine[], stock: Record<string, number>) {
   const repo = {
     withCheckout: jest.fn((_userId, work) => work(checkout)),
   } as unknown as jest.Mocked<OrdersRepository>;
-  return { checkout, repo, inventory, service: new OrdersService(repo) };
+  return {
+    checkout,
+    repo,
+    inventory,
+    service: new OrdersService(repo, config),
+  };
 }
 
 async function conflictBody(promise: Promise<unknown>) {
@@ -221,5 +234,65 @@ describe('OrdersService.placeOrder', () => {
       await expect(service.placeOrder('u1', dto)).rejects.toThrow('db down');
       expect(repo.withCheckout).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe('OrdersService.pay', () => {
+  function setup(result: PayResult) {
+    const repo = {
+      markPaid: jest.fn().mockResolvedValue(result),
+    } as unknown as jest.Mocked<OrdersRepository>;
+    return { repo, service: new OrdersService(repo, config) };
+  }
+
+  const paidOrder = (): OrderWithItems => ({
+    ...savedOrder({
+      code: 'SF-261030-AAAA',
+      userId: 'u1',
+      ...dto,
+      shippingFee: new Prisma.Decimal(0),
+      totalAmount: new Prisma.Decimal(500),
+      items: [],
+    }),
+    status: OrderStatus.PAID,
+    paidAt: new Date(),
+  });
+
+  it('thành công => trả đơn PAID', async () => {
+    const { service } = setup({ paid: true, order: paidOrder() });
+    const order = await service.pay('u1', 'o1');
+    expect(order.status).toBe(OrderStatus.PAID);
+    expect(order.paidAt).toBeInstanceOf(Date);
+  });
+
+  it('chỉ nhận đơn đặt trong hạn thanh toán (cấu hình theo phút)', async () => {
+    const { service, repo } = setup({ paid: true, order: paidOrder() });
+    const before = Date.now();
+    await service.pay('u1', 'o1');
+
+    const placedAfter = (repo.markPaid.mock.calls[0][2] as Date).getTime();
+    expect(placedAfter).toBeGreaterThanOrEqual(
+      before - TIMEOUT_MINUTES * 60_000,
+    );
+    expect(placedAfter).toBeLessThanOrEqual(
+      Date.now() - TIMEOUT_MINUTES * 60_000,
+    );
+    expect(repo.markPaid).toHaveBeenCalledWith('o1', 'u1', expect.any(Date));
+  });
+
+  it('không có đơn của user này => 404', async () => {
+    const { service } = setup({ paid: false, current: null });
+    await expect(service.pay('u1', 'o1')).rejects.toThrow(NotFoundException);
+  });
+
+  it.each([
+    [OrderStatus.CANCELLED, 'Đơn hàng đã bị huỷ'],
+    [OrderStatus.PENDING_PAYMENT, 'Đơn đã quá hạn thanh toán'],
+    [OrderStatus.PAID, 'Đơn hàng đã được thanh toán'],
+    [OrderStatus.SHIPPING, 'Đơn hàng đã được thanh toán'],
+  ])('đơn đang %s => 409 "%s"', async (status, message) => {
+    const { service } = setup({ paid: false, current: { status } });
+    const body = await conflictBody(service.pay('u1', 'o1'));
+    expect(body.message).toBe(message);
   });
 });

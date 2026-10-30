@@ -1,5 +1,11 @@
-import { ConflictException, Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { OrderStatus, Prisma } from '@prisma/client';
+import { Env } from '../../config/env.validation';
 import { uniqueViolationFields } from '../../common/prisma/prisma-errors';
 import { CartIssue } from '../cart/dto/cart-response.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -9,6 +15,7 @@ import {
   Checkout,
   OrderWithItems,
   OrdersRepository,
+  PayResult,
 } from './orders.repository';
 
 /** Số lần tạo lại mã khi trùng; 32^4 mã/ngày nên trùng 3 lần liên tiếp gần như không thể */
@@ -22,7 +29,10 @@ const ISSUE_LABELS: Record<CartIssue, (stock: number) => string> = {
 
 @Injectable()
 export class OrdersService {
-  constructor(private readonly orders: OrdersRepository) {}
+  constructor(
+    private readonly orders: OrdersRepository,
+    private readonly config: ConfigService<Env, true>,
+  ) {}
 
   /** Đặt đơn từ toàn bộ giỏ: trừ kho, lưu giá tại thời điểm đặt, xoá giỏ, tất cả trong một transaction. */
   async placeOrder(
@@ -42,6 +52,18 @@ export class OrdersService {
         throw err;
       }
     }
+  }
+
+  /** Thanh toán giả lập: chỉ đánh dấu PAID, không đụng tồn kho (đã trừ lúc đặt), số tiền là totalAmount đã chốt. */
+  async pay(userId: string, orderId: string): Promise<OrderResponseDto> {
+    const timeoutMinutes = this.config.get('ORDER_PAYMENT_TIMEOUT_MINUTES', {
+      infer: true,
+    });
+    // Kiểm tra hạn ngay tại đây: job tự huỷ chạy trễ thì đơn quá hạn vẫn không thanh toán được
+    const placedAfter = new Date(Date.now() - timeoutMinutes * 60_000);
+    const result = await this.orders.markPaid(orderId, userId, placedAfter);
+    if (result.paid) return OrderResponseDto.from(result.order);
+    throw paymentError(result.current);
   }
 
   private async checkout(
@@ -115,5 +137,20 @@ export class OrdersService {
     });
     await checkout.clearCart();
     return order;
+  }
+}
+
+/** Lý do không thanh toán được, suy từ trạng thái hiện tại của đơn */
+function paymentError(current: Extract<PayResult, { paid: false }>['current']) {
+  // Đơn của người khác cũng trả 404 để không lộ đơn đó có tồn tại
+  if (!current) return new NotFoundException('Không tìm thấy đơn hàng');
+  switch (current.status) {
+    case OrderStatus.CANCELLED:
+      return new ConflictException('Đơn hàng đã bị huỷ');
+    case OrderStatus.PENDING_PAYMENT:
+      // Vẫn chờ thanh toán mà không cập nhật được => đã quá hạn (job tự huỷ chưa kịp chạy)
+      return new ConflictException('Đơn đã quá hạn thanh toán');
+    default:
+      return new ConflictException('Đơn hàng đã được thanh toán');
   }
 }

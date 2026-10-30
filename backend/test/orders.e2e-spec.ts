@@ -1,10 +1,12 @@
 import { INestApplication } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { Role } from '@prisma/client';
 import { hash } from 'bcryptjs';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.setup';
+import { Env } from '../src/config/env.validation';
 import { PrismaService } from '../src/infra/prisma/prisma.service';
 import * as orderCode from '../src/modules/orders/order-code';
 
@@ -450,5 +452,124 @@ describe('Orders – đặt đơn (e2e)', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  describe('Thanh toán (giả lập)', () => {
+    const pay = (token: string, orderId: string) =>
+      http.post(`${API}/orders/${orderId}/pay`).set(bearer(token));
+
+    /** Khách mới + một đơn PENDING_PAYMENT của khách đó */
+    async function pendingOrder() {
+      const c = await customer();
+      const p = await createProduct(500_000, 10);
+      await addToCart(c.token, p, 2);
+      const res = await placeOrder(c.token).expect(201);
+      return { ...c, productId: p, orderId: (res.body as OrderBody).id };
+    }
+    const historyOf = (orderId: string) =>
+      prisma.orderStatusHistory.findMany({
+        where: { orderId },
+        orderBy: { createdAt: 'asc' },
+      });
+
+    it('TC16 thanh toán đơn của mình => 200 PAID, có paidAt, ghi lịch sử; tồn kho không đổi', async () => {
+      const o = await pendingOrder();
+
+      const res = await pay(o.token, o.orderId).expect(200);
+
+      expect(res.body).toMatchObject({
+        id: o.orderId,
+        status: 'PAID',
+        totalAmount: 1_000_000,
+      });
+      expect(res.body.paidAt).not.toBeNull();
+      expect(await stockOf(o.productId)).toBe(8);
+      expect(await historyOf(o.orderId)).toEqual([
+        expect.objectContaining({ toStatus: 'PENDING_PAYMENT' }),
+        expect.objectContaining({
+          fromStatus: 'PENDING_PAYMENT',
+          toStatus: 'PAID',
+          changedById: o.id,
+          note: 'Thanh toán (giả lập)',
+        }),
+      ]);
+    });
+
+    it('TC17 thanh toán lần 2 => 409 "đã được thanh toán", không thêm lịch sử', async () => {
+      const o = await pendingOrder();
+      await pay(o.token, o.orderId).expect(200);
+
+      const res = await pay(o.token, o.orderId).expect(409);
+
+      expect(res.body.message).toBe('Đơn hàng đã được thanh toán');
+      expect(await historyOf(o.orderId)).toHaveLength(2);
+    });
+
+    it('TC18 bấm thanh toán 2 lần cùng lúc => đúng 1 lần thành công, 1 dòng lịch sử PAID', async () => {
+      const o = await pendingOrder();
+
+      const statuses = (
+        await Promise.all([pay(o.token, o.orderId), pay(o.token, o.orderId)])
+      ).map((r) => r.status);
+
+      expect(statuses.sort()).toEqual([200, 409]);
+      const paidRows = (await historyOf(o.orderId)).filter(
+        (h) => h.toStatus === 'PAID',
+      );
+      expect(paidRows).toHaveLength(1);
+    });
+
+    it('TC19 đơn của khách khác hoặc không tồn tại => 404; id sai định dạng => 400', async () => {
+      const o = await pendingOrder();
+      const other = await customer();
+
+      await pay(other.token, o.orderId).expect(404);
+      await pay(o.token, '00000000-0000-4000-8000-000000000000').expect(404);
+      await pay(o.token, 'abc').expect(400);
+      // Khách khác thử thanh toán không làm đổi đơn
+      const order = await prisma.order.findUniqueOrThrow({
+        where: { id: o.orderId },
+      });
+      expect(order.status).toBe('PENDING_PAYMENT');
+    });
+
+    it('TC20 đơn đã huỷ => 409 "đã bị huỷ"', async () => {
+      const o = await pendingOrder();
+      await prisma.order.update({
+        where: { id: o.orderId },
+        data: { status: 'CANCELLED', cancelledAt: new Date() },
+      });
+
+      const res = await pay(o.token, o.orderId).expect(409);
+      expect(res.body.message).toBe('Đơn hàng đã bị huỷ');
+    });
+
+    it('TC21 đơn quá hạn thanh toán => 409, đơn vẫn PENDING_PAYMENT', async () => {
+      const o = await pendingOrder();
+      const timeout = app
+        .get(ConfigService<Env, true>)
+        .get('ORDER_PAYMENT_TIMEOUT_MINUTES', { infer: true });
+      await prisma.order.update({
+        where: { id: o.orderId },
+        data: { createdAt: new Date(Date.now() - (timeout + 1) * 60_000) },
+      });
+
+      const res = await pay(o.token, o.orderId).expect(409);
+
+      expect(res.body.message).toBe('Đơn đã quá hạn thanh toán');
+      const order = await prisma.order.findUniqueOrThrow({
+        where: { id: o.orderId },
+      });
+      expect(order).toMatchObject({ status: 'PENDING_PAYMENT', paidAt: null });
+    });
+
+    it('TC22 chưa đăng nhập => 401; nhân viên => 403', async () => {
+      const o = await pendingOrder();
+      await http.post(`${API}/orders/${o.orderId}/pay`).expect(401);
+      for (const role of [Role.WAREHOUSE, Role.SUPPORT, Role.ADMIN]) {
+        const staff = await loginAs(role);
+        await pay(staff.token, o.orderId).expect(403);
+      }
+    });
   });
 });
