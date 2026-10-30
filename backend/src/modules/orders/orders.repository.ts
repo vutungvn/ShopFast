@@ -15,6 +15,24 @@ export type OrderWithItems = Prisma.OrderGetPayload<{
   include: typeof orderInclude;
 }>;
 
+const detailInclude = {
+  items: {
+    orderBy: { productName: 'asc' },
+    include: { product: { select: { slug: true } } },
+  },
+  statusHistory: {
+    orderBy: { createdAt: 'asc' },
+    include: {
+      changedBy: { select: { id: true, fullName: true, role: true } },
+    },
+  },
+} satisfies Prisma.OrderInclude;
+
+/** Đơn kèm dòng sản phẩm (có slug để làm link) và lịch sử trạng thái kèm người đổi */
+export type OrderDetail = Prisma.OrderGetPayload<{
+  include: typeof detailInclude;
+}>;
+
 export interface NewOrder {
   code: string;
   userId: string;
@@ -64,6 +82,38 @@ export class OrdersRepository {
     private readonly prisma: PrismaService,
     private readonly cart: CartRepository,
   ) {}
+
+  /** Đơn của một khách, mới nhất trước; lọc theo một hoặc nhiều trạng thái. Trả về [trang hiện tại, tổng số]. */
+  listByUser(params: {
+    userId: string;
+    statuses?: OrderStatus[];
+    skip: number;
+    take: number;
+  }): Promise<[OrderWithItems[], number]> {
+    const where: Prisma.OrderWhereInput = {
+      userId: params.userId,
+      ...(params.statuses?.length && { status: { in: params.statuses } }),
+    };
+    return this.prisma.$transaction([
+      this.prisma.order.findMany({
+        where,
+        include: orderInclude,
+        // id phá hoà khi trùng thời điểm tạo để phân trang ổn định
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        skip: params.skip,
+        take: params.take,
+      }),
+      this.prisma.order.count({ where }),
+    ]);
+  }
+
+  /** Chi tiết đơn; truyền `userId` để chỉ tìm trong đơn của user đó (khách), bỏ trống cho nhân viên. */
+  findDetail(orderId: string, userId?: string): Promise<OrderDetail | null> {
+    return this.prisma.order.findFirst({
+      where: { id: orderId, ...(userId && { userId }) },
+      include: detailInclude,
+    });
+  }
 
   /** Chạy `work` trong một transaction; `work` throw thì mọi thay đổi (kể cả tồn kho đã trừ) được hoàn lại. */
   withCheckout<T>(

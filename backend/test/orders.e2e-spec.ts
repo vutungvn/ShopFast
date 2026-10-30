@@ -728,4 +728,234 @@ describe('Orders – đặt đơn (e2e)', () => {
       expect(await stockOf(o.productId)).toBe(7);
     });
   });
+
+  describe('Lịch sử đơn của khách', () => {
+    const listMine = (token: string, query = '') =>
+      http.get(`${API}/orders/me${query}`).set(bearer(token));
+    const getDetail = (token: string, orderId: string) =>
+      http.get(`${API}/orders/${orderId}`).set(bearer(token));
+    const pay = (token: string, orderId: string) =>
+      http.post(`${API}/orders/${orderId}/pay`).set(bearer(token));
+    const cancel = (token: string, orderId: string) =>
+      http.post(`${API}/orders/${orderId}/cancel`).set(bearer(token)).send({});
+
+    /** Đặt một đơn cho khách `c` với các sản phẩm mới tạo, mỗi sản phẩm `quantity` món */
+    async function order(
+      c: { token: string },
+      products: Array<{ price: number; quantity: number }> = [
+        { price: 100_000, quantity: 1 },
+      ],
+    ) {
+      for (const p of products) {
+        await addToCart(c.token, await createProduct(p.price, 50), p.quantity);
+      }
+      const res = await placeOrder(c.token).expect(201);
+      return (res.body as OrderBody).id;
+    }
+
+    it('TC32 danh sách: chỉ đơn của mình, mới nhất trước, phân trang đúng', async () => {
+      const c = await customer();
+      const other = await customer();
+      const ids = [await order(c), await order(c), await order(c)];
+      await order(other);
+
+      const all = await listMine(c.token).expect(200);
+      expect(all.body.items.map((o: { id: string }) => o.id)).toEqual(
+        [...ids].reverse(),
+      );
+      expect(all.body.meta).toEqual({
+        page: 1,
+        limit: 20,
+        total: 3,
+        totalPages: 1,
+      });
+
+      const page2 = await listMine(c.token, '?limit=2&page=2').expect(200);
+      expect(page2.body.items.map((o: { id: string }) => o.id)).toEqual([
+        ids[0],
+      ]);
+      expect(page2.body.meta).toEqual({
+        page: 2,
+        limit: 2,
+        total: 3,
+        totalPages: 2,
+      });
+    });
+
+    it('TC33 lọc nhiều trạng thái; trạng thái lạ => 400', async () => {
+      const c = await customer();
+      const pending = await order(c);
+      const paid = await order(c);
+      const cancelled = await order(c);
+      await pay(c.token, paid).expect(200);
+      await cancel(c.token, cancelled).expect(200);
+
+      const res = await listMine(c.token, '?status=PAID,CANCELLED').expect(200);
+      const found = res.body.items.map((o: { id: string }) => o.id).sort();
+      expect(found).toEqual([paid, cancelled].sort());
+      expect(found).not.toContain(pending);
+
+      await listMine(c.token, '?status=SHIPPED').expect(400);
+      await listMine(c.token, '?limit=101').expect(400);
+    });
+
+    it('TC34 thẻ đơn: tối đa 3 dòng xem trước, đúng tổng loại và tổng số lượng, hạn thanh toán', async () => {
+      const c = await customer();
+      await order(c, [
+        { price: 100_000, quantity: 1 },
+        { price: 200_000, quantity: 2 },
+        { price: 300_000, quantity: 3 },
+        { price: 400_000, quantity: 4 },
+      ]);
+
+      const [summary] = (await listMine(c.token).expect(200)).body.items;
+
+      expect(summary).toMatchObject({
+        status: 'PENDING_PAYMENT',
+        totalAmount: 3_000_000,
+        itemCount: 4,
+        totalQuantity: 10,
+        canPay: true,
+        canCancel: true,
+      });
+      expect(summary.previewItems).toHaveLength(3);
+      expect(summary.code).toMatch(/^SF-/);
+      expect(new Date(summary.paymentDueAt).getTime()).toBeGreaterThan(
+        Date.now(),
+      );
+    });
+
+    it('TC35 chi tiết: giá lúc đặt, slug sản phẩm, timeline đúng thứ tự, khách không thấy danh tính người đổi', async () => {
+      const c = await customer();
+      const orderId = await order(c, [{ price: 500_000, quantity: 2 }]);
+      const productId = (
+        await prisma.orderItem.findFirstOrThrow({ where: { orderId } })
+      ).productId;
+      await prisma.product.update({
+        where: { id: productId },
+        data: { price: 999_000 },
+      });
+      await pay(c.token, orderId).expect(200);
+      await cancel(c.token, orderId).expect(200);
+
+      const res = await getDetail(c.token, orderId).expect(200);
+
+      expect(res.body).toMatchObject({
+        id: orderId,
+        status: 'CANCELLED',
+        ...SHIPPING,
+        totalAmount: 1_000_000,
+        canPay: false,
+        canCancel: false,
+        paymentDueAt: null,
+      });
+      expect(res.body.items[0]).toMatchObject({
+        productId,
+        unitPrice: 500_000,
+        lineTotal: 1_000_000,
+        productSlug: expect.stringContaining(RUN),
+      });
+      expect(
+        res.body.timeline.map((t: { toStatus: string; actor: string }) => [
+          t.toStatus,
+          t.actor,
+        ]),
+      ).toEqual([
+        ['PENDING_PAYMENT', 'CUSTOMER'],
+        ['PAID', 'CUSTOMER'],
+        ['CANCELLED', 'CUSTOMER'],
+      ]);
+      expect(res.body.timeline[2].note).toBe('Hoàn tiền (giả lập)');
+      expect(res.body.timeline.some((t: object) => 'changedBy' in t)).toBe(
+        false,
+      );
+    });
+
+    it('TC36 đơn quá hạn chưa bị huỷ => canPay=false, hạn thanh toán đã qua, vẫn huỷ được', async () => {
+      const c = await customer();
+      const orderId = await order(c);
+      await prisma.order.update({
+        where: { id: orderId },
+        data: { createdAt: new Date(Date.now() - 30 * 24 * 60 * 60_000) },
+      });
+
+      const detail = (await getDetail(c.token, orderId).expect(200)).body;
+      const [summary] = (await listMine(c.token).expect(200)).body.items;
+
+      for (const o of [detail, summary]) {
+        expect(o).toMatchObject({
+          status: 'PENDING_PAYMENT',
+          canPay: false,
+          canCancel: true,
+        });
+        expect(new Date(o.paymentDueAt).getTime()).toBeLessThan(Date.now());
+      }
+    });
+
+    it('TC37 đơn của khách khác => 404; id sai => 400; không có token => 401', async () => {
+      const owner = await customer();
+      const other = await customer();
+      const orderId = await order(owner);
+
+      await getDetail(other.token, orderId).expect(404);
+      await getDetail(
+        owner.token,
+        '00000000-0000-4000-8000-000000000000',
+      ).expect(404);
+      await getDetail(owner.token, 'abc').expect(400);
+      await http.get(`${API}/orders/${orderId}`).expect(401);
+      await http.get(`${API}/orders/me`).expect(401);
+    });
+
+    it('TC38 nhân viên xem được mọi đơn kèm người đổi trạng thái, nhưng /orders/me => 403', async () => {
+      const c = await customer();
+      const orderId = await order(c);
+      const warehouse = await loginAs(Role.WAREHOUSE);
+      // Giả lập kho xác nhận và hệ thống huỷ (chưa có endpoint của kho / job tự huỷ)
+      await prisma.orderStatusHistory.createMany({
+        data: [
+          {
+            orderId,
+            fromStatus: 'PENDING_PAYMENT',
+            toStatus: 'PAID',
+            changedById: warehouse.id,
+            createdAt: new Date(Date.now() + 1_000),
+          },
+          {
+            orderId,
+            fromStatus: 'PAID',
+            toStatus: 'CANCELLED',
+            changedById: null,
+            createdAt: new Date(Date.now() + 2_000),
+          },
+        ],
+      });
+
+      for (const role of [Role.SUPPORT, Role.WAREHOUSE, Role.ADMIN]) {
+        const staff = role === Role.WAREHOUSE ? warehouse : await loginAs(role);
+        const res = await getDetail(staff.token, orderId).expect(200);
+        expect(
+          res.body.timeline.map((t: { actor: string }) => t.actor),
+        ).toEqual(['CUSTOMER', 'STAFF', 'SYSTEM']);
+        expect(res.body.timeline[0].changedBy).toMatchObject({
+          id: c.id,
+          role: 'CUSTOMER',
+        });
+        expect(res.body.timeline[1].changedBy).toMatchObject({
+          id: warehouse.id,
+          role: 'WAREHOUSE',
+        });
+        expect(res.body.timeline[2].changedBy).toBeNull();
+        await listMine(staff.token).expect(403);
+      }
+
+      const asCustomer = await getDetail(c.token, orderId).expect(200);
+      expect(
+        asCustomer.body.timeline.map((t: { actor: string }) => t.actor),
+      ).toEqual(['CUSTOMER', 'STAFF', 'SYSTEM']);
+      expect(
+        asCustomer.body.timeline.some((t: object) => 'changedBy' in t),
+      ).toBe(false);
+    });
+  });
 });

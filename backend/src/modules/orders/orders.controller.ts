@@ -1,11 +1,13 @@
 import {
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpStatus,
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -16,8 +18,14 @@ import { JwtAuthGuard } from '../../common/auth/jwt-auth.guard';
 import { Roles } from '../../common/auth/roles.decorator';
 import { RolesGuard } from '../../common/auth/roles.guard';
 import { CancelOrderDto } from './dto/cancel-order.dto';
+import { PaginatedResult } from '../../common/dto/pagination.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
-import { OrderResponseDto } from './dto/order-response.dto';
+import { OrderQueryDto } from './dto/order-query.dto';
+import {
+  OrderDetailDto,
+  OrderResponseDto,
+  OrderSummaryDto,
+} from './dto/order-response.dto';
 import { OrdersService } from './orders.service';
 
 @ApiTags('Orders')
@@ -38,6 +46,32 @@ export class OrdersController {
     @Body() dto: CreateOrderDto,
   ): Promise<OrderResponseDto> {
     return this.orders.placeOrder(user.id, dto);
+  }
+
+  /** Đơn của tôi (chỉ khách hàng): mới nhất trước, lọc nhiều trạng thái `status=PAID,CONFIRMED`, phân trang */
+  // Khai báo trước ':id' để "me" không bị hiểu là id đơn
+  @Get('me')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.CUSTOMER)
+  listMine(
+    @CurrentUser() user: AuthUser,
+    @Query() query: OrderQueryDto,
+  ): Promise<PaginatedResult<OrderSummaryDto>> {
+    return this.orders.listMine(user.id, query);
+  }
+
+  /**
+   * Chi tiết đơn kèm lịch sử trạng thái. Khách chỉ xem đơn của mình (đơn khác => 404);
+   * nhân viên (CSKH, kho, admin) xem mọi đơn và thấy ai đã đổi trạng thái.
+   */
+  @Get(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.CUSTOMER, Role.SUPPORT, Role.WAREHOUSE, Role.ADMIN)
+  detail(
+    @CurrentUser() user: AuthUser,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+  ): Promise<OrderDetailDto> {
+    return this.orders.getDetail(user, id);
   }
 
   /**

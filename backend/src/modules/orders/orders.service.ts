@@ -4,14 +4,23 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { OrderStatus, Prisma } from '@prisma/client';
+import { OrderStatus, Prisma, Role } from '@prisma/client';
+import { AuthUser } from '../../common/auth/auth-user';
+import { paginate, PaginatedResult } from '../../common/dto/pagination.dto';
 import { Env } from '../../config/env.validation';
 import { uniqueViolationFields } from '../../common/prisma/prisma-errors';
 import { CartIssue } from '../cart/dto/cart-response.dto';
 import { CancelOrderDto } from './dto/cancel-order.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
-import { CheckoutProblemDto, OrderResponseDto } from './dto/order-response.dto';
+import { OrderQueryDto } from './dto/order-query.dto';
+import {
+  CheckoutProblemDto,
+  OrderDetailDto,
+  OrderResponseDto,
+  OrderSummaryDto,
+} from './dto/order-response.dto';
 import { generateOrderCode } from './order-code';
+import { CUSTOMER_CANCELLABLE, customerActions } from './order-rules';
 import {
   Checkout,
   OrderWithItems,
@@ -21,12 +30,6 @@ import {
 
 /** Số lần tạo lại mã khi trùng; 32^4 mã/ngày nên trùng 3 lần liên tiếp gần như không thể */
 const MAX_CODE_ATTEMPTS = 3;
-
-/** Khách chỉ huỷ được khi kho chưa xác nhận đơn */
-const CUSTOMER_CANCELLABLE: OrderStatus[] = [
-  OrderStatus.PENDING_PAYMENT,
-  OrderStatus.PAID,
-];
 
 const ISSUE_LABELS: Record<CartIssue, (stock: number) => string> = {
   [CartIssue.INACTIVE]: () => 'ngừng bán',
@@ -63,14 +66,51 @@ export class OrdersService {
 
   /** Thanh toán giả lập: chỉ đánh dấu PAID, không đụng tồn kho (đã trừ lúc đặt), số tiền là totalAmount đã chốt. */
   async pay(userId: string, orderId: string): Promise<OrderResponseDto> {
-    const timeoutMinutes = this.config.get('ORDER_PAYMENT_TIMEOUT_MINUTES', {
-      infer: true,
-    });
     // Kiểm tra hạn ngay tại đây: job tự huỷ chạy trễ thì đơn quá hạn vẫn không thanh toán được
-    const placedAfter = new Date(Date.now() - timeoutMinutes * 60_000);
+    const placedAfter = new Date(Date.now() - this.paymentTimeoutMs());
     const result = await this.orders.markPaid(orderId, userId, placedAfter);
     if (result.paid) return OrderResponseDto.from(result.order);
     throw paymentError(result.current);
+  }
+
+  /** Đơn của khách đang đăng nhập, mới nhất trước, lọc theo trạng thái */
+  async listMine(
+    userId: string,
+    query: OrderQueryDto,
+  ): Promise<PaginatedResult<OrderSummaryDto>> {
+    const [orders, total] = await this.orders.listByUser({
+      userId,
+      statuses: query.status,
+      skip: query.skip,
+      take: query.limit,
+    });
+    const timeoutMs = this.paymentTimeoutMs();
+    const now = new Date();
+    return paginate(
+      orders.map((order) =>
+        OrderSummaryDto.from(order, customerActions(order, timeoutMs, now)),
+      ),
+      total,
+      query,
+    );
+  }
+
+  /**
+   * Chi tiết đơn. Khách chỉ xem được đơn của mình (đơn khác => 404, không lộ đơn có tồn tại);
+   * nhân viên xem mọi đơn và thấy ai đã đổi trạng thái.
+   */
+  async getDetail(viewer: AuthUser, orderId: string): Promise<OrderDetailDto> {
+    const isCustomer = viewer.role === Role.CUSTOMER;
+    const order = await this.orders.findDetail(
+      orderId,
+      isCustomer ? viewer.id : undefined,
+    );
+    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
+    return OrderDetailDto.fromDetail(
+      order,
+      customerActions(order, this.paymentTimeoutMs()),
+      { showStaff: !isCustomer },
+    );
   }
 
   /** Khách huỷ đơn của mình khi đơn còn PENDING_PAYMENT / PAID; trả kho trong cùng transaction. */
@@ -99,6 +139,12 @@ export class OrdersService {
       },
     );
     return OrderResponseDto.from(order);
+  }
+
+  private paymentTimeoutMs(): number {
+    return (
+      this.config.get('ORDER_PAYMENT_TIMEOUT_MINUTES', { infer: true }) * 60_000
+    );
   }
 
   private async checkout(

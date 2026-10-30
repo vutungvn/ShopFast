@@ -1,13 +1,15 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { OrderStatus, Prisma } from '@prisma/client';
+import { OrderStatus, Prisma, Role } from '@prisma/client';
 import { Env } from '../../config/env.validation';
 import { CheckoutLine } from '../cart/cart.repository';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { OrderQueryDto } from './dto/order-query.dto';
 import {
   Checkout,
   LockedOrder,
   NewOrder,
+  OrderDetail,
   OrderWithItems,
   OrdersRepository,
   PayResult,
@@ -362,5 +364,186 @@ describe('OrdersService.cancel', () => {
     const body = await conflictBody(service.cancel('u1', 'o1', {}));
     expect(body.message).toBe(message);
     expect(locked?.cancel).not.toHaveBeenCalled();
+  });
+});
+
+describe('OrdersService.getDetail', () => {
+  type Person = { id: string; fullName: string; role: Role };
+  const staffMember: Person = {
+    id: 's1',
+    fullName: 'Kho Hà Nội',
+    role: Role.WAREHOUSE,
+  };
+  const customerUser: Person = {
+    id: 'u1',
+    fullName: 'Khách',
+    role: Role.CUSTOMER,
+  };
+
+  function detail(): OrderDetail {
+    const base = savedOrder({
+      code: 'SF-261030-AAAA',
+      userId: 'u1',
+      ...dto,
+      shippingFee: new Prisma.Decimal(0),
+      totalAmount: new Prisma.Decimal(300),
+      items: [
+        {
+          productId: 'p1',
+          productName: 'SP 1',
+          unitPrice: new Prisma.Decimal(100),
+          quantity: 3,
+        },
+      ],
+    });
+    const at = new Date();
+    const history = (
+      fromStatus: OrderStatus | null,
+      toStatus: OrderStatus,
+      changedBy: Person | null,
+    ) => ({
+      id: `h-${toStatus}`,
+      orderId: 'o1',
+      fromStatus,
+      toStatus,
+      changedById: changedBy?.id ?? null,
+      changedBy,
+      note: null,
+      createdAt: at,
+    });
+    return {
+      ...base,
+      status: OrderStatus.CANCELLED,
+      items: base.items.map((item) => ({ ...item, product: { slug: 'sp-1' } })),
+      statusHistory: [
+        history(null, OrderStatus.PENDING_PAYMENT, customerUser),
+        history(OrderStatus.PENDING_PAYMENT, OrderStatus.PAID, customerUser),
+        history(OrderStatus.PAID, OrderStatus.CONFIRMED, staffMember),
+        history(OrderStatus.CONFIRMED, OrderStatus.CANCELLED, null),
+      ],
+    };
+  }
+
+  function setup(found: OrderDetail | null) {
+    const repo = {
+      findDetail: jest.fn().mockResolvedValue(found),
+    } as unknown as jest.Mocked<OrdersRepository>;
+    return { repo, service: new OrdersService(repo, config) };
+  }
+
+  it('khách => chỉ tìm trong đơn của mình', async () => {
+    const { service, repo } = setup(detail());
+    await service.getDetail(
+      { id: 'u1', email: 'a@b.c', role: Role.CUSTOMER },
+      'o1',
+    );
+    expect(repo.findDetail).toHaveBeenCalledWith('o1', 'u1');
+  });
+
+  it('nhân viên => tìm mọi đơn', async () => {
+    const { service, repo } = setup(detail());
+    await service.getDetail(
+      { id: 's1', email: 'k@b.c', role: Role.WAREHOUSE },
+      'o1',
+    );
+    expect(repo.findDetail).toHaveBeenCalledWith('o1', undefined);
+  });
+
+  it('không thấy => 404', async () => {
+    const { service } = setup(null);
+    await expect(
+      service.getDetail(
+        { id: 'u1', email: 'a@b.c', role: Role.CUSTOMER },
+        'o1',
+      ),
+    ).rejects.toThrow(NotFoundException);
+  });
+
+  it('khách => timeline có loại người đổi nhưng KHÔNG có danh tính nhân viên', async () => {
+    const { service } = setup(detail());
+    const order = await service.getDetail(
+      { id: 'u1', email: 'a@b.c', role: Role.CUSTOMER },
+      'o1',
+    );
+    expect(order.timeline.map((t) => t.actor)).toEqual([
+      'CUSTOMER',
+      'CUSTOMER',
+      'STAFF',
+      'SYSTEM',
+    ]);
+    expect(order.timeline.every((t) => !('changedBy' in t))).toBe(true);
+    expect(order.items[0]).toMatchObject({
+      productSlug: 'sp-1',
+      lineTotal: 300,
+    });
+    expect(order).toMatchObject({
+      canPay: false,
+      canCancel: false,
+      paymentDueAt: null,
+    });
+  });
+
+  it('nhân viên => timeline kèm người đổi', async () => {
+    const { service } = setup(detail());
+    const order = await service.getDetail(
+      { id: 's1', email: 'k@b.c', role: Role.WAREHOUSE },
+      'o1',
+    );
+    expect(order.timeline[2].changedBy).toEqual(staffMember);
+    expect(order.timeline[3].changedBy).toBeNull();
+  });
+});
+
+describe('OrdersService.listMine', () => {
+  it('trả tóm tắt đơn: tối đa 3 dòng xem trước, tổng loại và tổng số lượng, kèm phân trang', async () => {
+    const order = savedOrder({
+      code: 'SF-261030-AAAA',
+      userId: 'u1',
+      ...dto,
+      shippingFee: new Prisma.Decimal(0),
+      totalAmount: new Prisma.Decimal(1000),
+      items: ['a', 'b', 'c', 'd'].map((id, i) => ({
+        productId: id,
+        productName: `SP ${id}`,
+        unitPrice: new Prisma.Decimal(100),
+        quantity: i + 1,
+      })),
+    });
+    const repo = {
+      listByUser: jest.fn().mockResolvedValue([[order], 21]),
+    } as unknown as jest.Mocked<OrdersRepository>;
+    const service = new OrdersService(repo, config);
+    const query = Object.assign(new OrderQueryDto(), {
+      page: 2,
+      limit: 20,
+      status: [OrderStatus.PENDING_PAYMENT],
+    });
+
+    const result = await service.listMine('u1', query);
+
+    expect(repo.listByUser).toHaveBeenCalledWith({
+      userId: 'u1',
+      statuses: [OrderStatus.PENDING_PAYMENT],
+      skip: 20,
+      take: 20,
+    });
+    expect(result.meta).toEqual({
+      page: 2,
+      limit: 20,
+      total: 21,
+      totalPages: 2,
+    });
+    expect(result.items[0]).toMatchObject({
+      itemCount: 4,
+      totalQuantity: 10,
+      canPay: true,
+      canCancel: true,
+    });
+    expect(result.items[0].previewItems.map((i) => i.productId)).toEqual([
+      'a',
+      'b',
+      'c',
+    ]);
+    expect(result.items[0].paymentDueAt).toBeInstanceOf(Date);
   });
 });
