@@ -27,6 +27,7 @@ import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import {
   OrderDetailDto,
   OrderResponseDto,
+  OrderStatsDto,
   OrderSummaryDto,
   StaffOrderSummaryDto,
 } from './dto/order-response.dto';
@@ -63,6 +64,15 @@ export class OrdersController {
     @Query() query: StaffOrderQueryDto,
   ): Promise<PaginatedResult<StaffOrderSummaryDto>> {
     return this.orders.listForStaff(query);
+  }
+
+  /** Số đơn theo từng trạng thái (kho, admin, CSKH) */
+  // Khai báo trước ':id' để "stats" không bị hiểu là id đơn
+  @Get('stats')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.WAREHOUSE, Role.ADMIN, Role.SUPPORT)
+  stats(): Promise<OrderStatsDto> {
+    return this.orders.stats();
   }
 
   /** Đơn của tôi (chỉ khách hàng): mới nhất trước, lọc nhiều trạng thái `status=PAID,CONFIRMED`, phân trang */

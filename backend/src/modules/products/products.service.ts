@@ -14,6 +14,7 @@ import {
   ManageProductQueryDto,
   ProductQueryDto,
 } from './dto/product-query.dto';
+import { InventoryStatsDto } from './dto/inventory-stats.dto';
 import { ProductResponseDto } from './dto/product-response.dto';
 import { UpdateInventoryDto } from './dto/update-inventory.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
@@ -41,7 +42,7 @@ export class ProductsService {
   listForStaff(
     query: ManageProductQueryDto,
   ): Promise<PaginatedResult<ProductResponseDto>> {
-    return this.search(query, query.isActive);
+    return this.search(query, query.isActive, query.lowStock);
   }
 
   async getBySlug(slug: string): Promise<ProductResponseDto> {
@@ -130,9 +131,15 @@ export class ProductsService {
     return ProductResponseDto.from(product);
   }
 
+  /** Số liệu tồn kho cho nhân viên: tổng, sắp hết, hết hàng, ngừng bán */
+  stockStats(): Promise<InventoryStatsDto> {
+    return this.products.stockStats();
+  }
+
   private async search(
     query: ProductQueryDto,
     isActive: boolean | undefined,
+    lowStock?: boolean,
   ): Promise<PaginatedResult<ProductResponseDto>> {
     if (
       query.minPrice !== undefined &&
@@ -159,6 +166,7 @@ export class ProductsService {
         inStock: query.inStock,
         q: query.q,
         isActive,
+        lowStock,
       },
       sort: query.sort,
       skip: query.skip,

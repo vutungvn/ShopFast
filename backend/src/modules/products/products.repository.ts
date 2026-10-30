@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
+import { InventoryStatsDto } from './dto/inventory-stats.dto';
 import { ProductSort } from './dto/product-query.dto';
+import { LOW_STOCK_THRESHOLD } from './products.constants';
 
 /** Quan hệ luôn kèm theo sản phẩm; giỏ hàng dùng lại để trả cùng một dạng dữ liệu. */
 export const productInclude = {
@@ -22,6 +24,8 @@ export interface ProductFilter {
   inStock?: boolean;
   q?: string;
   isActive?: boolean;
+  /** Còn 1..LOW_STOCK_THRESHOLD */
+  lowStock?: boolean;
 }
 
 // Luôn kèm id để thứ tự ổn định khi nhiều sản phẩm trùng giá/tên, tránh lặp hoặc sót giữa các trang
@@ -54,6 +58,22 @@ export class ProductsRepository {
       }),
       this.prisma.product.count({ where }),
     ]);
+  }
+
+  /** Số liệu cho màn tồn kho; sắp hết / hết hàng chỉ tính sản phẩm đang bán */
+  async stockStats(): Promise<InventoryStatsDto> {
+    const [total, lowStock, outOfStock, inactive] =
+      await this.prisma.$transaction([
+        this.prisma.product.count(),
+        this.prisma.product.count({
+          where: buildWhere({ isActive: true, lowStock: true }),
+        }),
+        this.prisma.product.count({
+          where: buildWhere({ isActive: true, inStock: false }),
+        }),
+        this.prisma.product.count({ where: { isActive: false } }),
+      ]);
+    return { total, lowStock, outOfStock, inactive };
   }
 
   findById(id: string): Promise<ProductWithRelations | null> {
@@ -143,6 +163,9 @@ function buildWhere(filter: ProductFilter): Prisma.ProductWhereInput {
   if (filter.inStock === true) and.push({ inventory: { stock: { gt: 0 } } });
   if (filter.inStock === false) {
     and.push({ OR: [{ inventory: null }, { inventory: { stock: 0 } }] });
+  }
+  if (filter.lowStock) {
+    and.push({ inventory: { stock: { gt: 0, lte: LOW_STOCK_THRESHOLD } } });
   }
   if (filter.q) {
     and.push({

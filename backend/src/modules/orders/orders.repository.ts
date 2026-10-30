@@ -26,6 +26,7 @@ const detailInclude = {
       changedBy: { select: { id: true, fullName: true, role: true } },
     },
   },
+  user: { select: { id: true, fullName: true, email: true } },
 } satisfies Prisma.OrderInclude;
 
 const staffListInclude = {
@@ -172,6 +173,17 @@ export class OrdersRepository {
       }),
       this.prisma.order.count({ where }),
     ]);
+  }
+
+  /** Số đơn theo từng trạng thái (trạng thái không có đơn thì không có trong kết quả) */
+  async countByStatus(): Promise<
+    Array<{ status: OrderStatus; count: number }>
+  > {
+    const groups = await this.prisma.order.groupBy({
+      by: ['status'],
+      _count: { _all: true },
+    });
+    return groups.map((g) => ({ status: g.status, count: g._count._all }));
   }
 
   /** Đơn chờ thanh toán đặt trước `placedBefore` (đã quá hạn), cũ nhất trước */

@@ -20,6 +20,7 @@ import {
   ManageProductQueryDto,
   ProductQueryDto,
 } from './dto/product-query.dto';
+import { InventoryStatsDto } from './dto/inventory-stats.dto';
 import { ProductResponseDto } from './dto/product-response.dto';
 import { UpdateInventoryDto } from './dto/update-inventory.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
@@ -48,6 +49,15 @@ export class ProductsController {
     @Query() query: ManageProductQueryDto,
   ): Promise<PaginatedResult<ProductResponseDto>> {
     return this.products.listForStaff(query);
+  }
+
+  /** Số liệu tồn kho: tổng, sắp hết (≤ 5), hết hàng, ngừng bán (kho, admin) */
+  @Get('manage/stats')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.WAREHOUSE)
+  stockStats(): Promise<InventoryStatsDto> {
+    return this.products.stockStats();
   }
 
   /** Chi tiết sản phẩm đang bán theo slug (công khai) */

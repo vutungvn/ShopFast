@@ -1,6 +1,9 @@
 import { Lock } from 'lucide-react'
+import { Link } from 'react-router'
+import { PATHS } from '@/app/paths'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
+import { buttonClasses } from '@/components/ui/button-styles'
 import { PERKS } from '@/features/catalog/perks'
 import { formatPrice } from '@/lib/format'
 import type { Cart } from '../types'
@@ -38,7 +41,6 @@ export function CartSummary({ cart }: { cart: Cart }) {
 
       <div className="mt-5 hidden lg:block">
         <CheckoutButton cart={cart} className="w-full" size="lg" />
-        {cart.canCheckout && <p className="mt-2 text-center text-xs text-slate-400">Tính năng đặt hàng sắp ra mắt</p>}
       </div>
 
       <ul className="mt-5 space-y-2.5 rounded-xl bg-slate-50 p-4">
@@ -59,16 +61,18 @@ type CheckoutButtonProps = {
   size?: 'md' | 'lg'
 }
 
-/** Đặt hàng làm ở bước sau: tạm khoá nút. Giỏ còn dòng lỗi thì hiện khoá để báo chưa đặt được. */
+/** Sang bước nhập thông tin nhận hàng. Giỏ còn dòng lỗi thì khoá nút để báo chưa đặt được. */
 export function CheckoutButton({ cart, className, size = 'md' }: CheckoutButtonProps) {
+  if (cart.canCheckout) {
+    return (
+      <Link to={PATHS.checkout} className={buttonClasses('primary', size, className)}>
+        Tiến hành đặt hàng
+      </Link>
+    )
+  }
   return (
-    <Button
-      size={size}
-      className={className}
-      disabled
-      title={cart.canCheckout ? 'Tính năng đặt hàng sắp ra mắt' : 'Vui lòng xử lý các sản phẩm có vấn đề trước'}
-    >
-      {!cart.canCheckout && <Lock className="size-4.5" aria-hidden />}
+    <Button size={size} className={className} disabled title="Vui lòng xử lý các sản phẩm có vấn đề trước">
+      <Lock className="size-4.5" aria-hidden />
       Tiến hành đặt hàng
     </Button>
   )

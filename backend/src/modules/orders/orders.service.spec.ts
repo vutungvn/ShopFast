@@ -463,6 +463,7 @@ describe('OrdersService.updateStatus', () => {
       status: toStatus,
       items: [],
       statusHistory: [],
+      user: { id: 'u1', fullName: 'Khách', email: 'a@b.c' },
     }));
     return setup;
   }
@@ -618,6 +619,7 @@ describe('OrdersService.getDetail', () => {
       ...base,
       status: OrderStatus.CANCELLED,
       items: base.items.map((item) => ({ ...item, product: { slug: 'sp-1' } })),
+      user: { id: 'u1', fullName: 'Nguyễn Văn An', email: 'an@shopfast.vn' },
       statusHistory: [
         history(null, OrderStatus.PENDING_PAYMENT, customerUser),
         history(OrderStatus.PENDING_PAYMENT, OrderStatus.PAID, customerUser),
@@ -675,6 +677,7 @@ describe('OrdersService.getDetail', () => {
       'SYSTEM',
     ]);
     expect(order.timeline.every((t) => !('changedBy' in t))).toBe(true);
+    expect(order).not.toHaveProperty('customer');
     expect(order.items[0]).toMatchObject({
       productSlug: 'sp-1',
       lineTotal: 300,
@@ -693,6 +696,11 @@ describe('OrdersService.getDetail', () => {
       'o1',
     );
     expect(order.timeline[2].changedBy).toEqual(staffMember);
+    expect(order.customer).toEqual({
+      id: 'u1',
+      fullName: 'Nguyễn Văn An',
+      email: 'an@shopfast.vn',
+    });
     expect(order.timeline[3].changedBy).toBeNull();
   });
 });
@@ -797,5 +805,26 @@ describe('OrdersService.expireOverdueOrders', () => {
     expect(placedBefore.getTime()).toBeLessThanOrEqual(
       Date.now() - TIMEOUT_MINUTES * 60_000,
     );
+  });
+});
+
+describe('OrdersService.stats', () => {
+  it('đủ 7 trạng thái, trạng thái không có đơn => 0', async () => {
+    const repo = {
+      countByStatus: jest.fn().mockResolvedValue([
+        { status: OrderStatus.PAID, count: 3 },
+        { status: OrderStatus.DELIVERED, count: 10 },
+      ]),
+    } as unknown as jest.Mocked<OrdersRepository>;
+    const { counts } = await new OrdersService(repo, config).stats();
+    expect(counts).toEqual({
+      PENDING_PAYMENT: 0,
+      PAID: 3,
+      CONFIRMED: 0,
+      PACKING: 0,
+      SHIPPING: 0,
+      DELIVERED: 10,
+      CANCELLED: 0,
+    });
   });
 });

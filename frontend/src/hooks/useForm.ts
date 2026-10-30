@@ -21,11 +21,11 @@ export function useForm<T extends Record<string, string>>(
   const visibleError = (name: keyof T) =>
     (submitted || touched[name] ? errors[name] : undefined) ?? serverErrors[name]
 
-  /** Props gắn vào TextField/PasswordField: `<TextField {...field('email')} />` */
+  /** Props gắn vào TextField/PasswordField/TextAreaField: `<TextField {...field('email')} />` */
   const field = (name: keyof T & string) => ({
     name,
     value: values[name],
-    onChange: (e: ChangeEvent<HTMLInputElement>) => {
+    onChange: (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       setValues((prev) => ({ ...prev, [name]: e.target.value }))
       setServerErrors((prev) => ({ ...prev, [name]: undefined }))
     },

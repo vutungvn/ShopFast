@@ -140,6 +140,8 @@ export class OrderDetailDto extends OrderResponseDto {
   paymentDueAt: Date | null;
   canPay: boolean;
   canCancel: boolean;
+  /** Khách đặt đơn – chỉ trả cho nhân viên */
+  customer?: { id: string; fullName: string; email: string };
 
   static fromDetail(
     order: OrderDetail,
@@ -166,8 +168,14 @@ export class OrderDetailDto extends OrderResponseDto {
         createdAt: entry.createdAt,
       })),
       ...actions,
+      ...(showStaff && { customer: order.user }),
     };
   }
+}
+
+export class OrderStatsDto {
+  /** Số đơn theo từng trạng thái (đủ 7 trạng thái, không có đơn => 0) */
+  counts: Record<OrderStatus, number>;
 }
 
 /** Một đơn trong danh sách của nhân viên: thẻ đơn + khách, người nhận và việc kho làm được tiếp */

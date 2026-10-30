@@ -20,6 +20,7 @@ import {
   CheckoutProblemDto,
   OrderDetailDto,
   OrderResponseDto,
+  OrderStatsDto,
   OrderSummaryDto,
   StaffOrderSummaryDto,
 } from './dto/order-response.dto';
@@ -177,6 +178,17 @@ export class OrdersService {
       },
     );
     return OrderResponseDto.from(order);
+  }
+
+  /** Số đơn theo từng trạng thái cho các ô thống kê và số trên tab của màn quản lý đơn */
+  async stats(): Promise<OrderStatsDto> {
+    const counts = Object.fromEntries(
+      Object.values(OrderStatus).map((status) => [status, 0]),
+    ) as Record<OrderStatus, number>;
+    for (const { status, count } of await this.orders.countByStatus()) {
+      counts[status] = count;
+    }
+    return { counts };
   }
 
   /** Danh sách đơn cho nhân viên (kho, admin, CSKH chỉ xem) */

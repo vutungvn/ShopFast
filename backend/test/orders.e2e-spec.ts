@@ -1556,4 +1556,114 @@ describe('Orders – đặt đơn (e2e)', () => {
       .send({})
       .expect(409);
   });
+
+  describe('Số liệu cho nhân viên', () => {
+    it('TC54 GET /orders/stats: đủ 7 trạng thái, đặt thêm đơn thì tăng; kho/admin/CSKH xem được, khách => 403', async () => {
+      const warehouse = await loginAs(Role.WAREHOUSE);
+      const before = (
+        await http
+          .get(`${API}/orders/stats`)
+          .set(bearer(warehouse.token))
+          .expect(200)
+      ).body.counts as Record<string, number>;
+      expect(Object.keys(before).sort()).toEqual(
+        Object.values(OrderStatus).slice().sort(),
+      );
+
+      const c = await customer();
+      await addToCart(c.token, await createProduct(100_000, 5), 1);
+      await placeOrder(c.token).expect(201);
+
+      const after = (
+        await http
+          .get(`${API}/orders/stats`)
+          .set(bearer(warehouse.token))
+          .expect(200)
+      ).body.counts as Record<string, number>;
+      expect(after.PENDING_PAYMENT).toBe(before.PENDING_PAYMENT + 1);
+
+      const support = await loginAs(Role.SUPPORT);
+
+      await http
+        .get(`${API}/orders/stats`)
+        .set(bearer(support.token))
+        .expect(200);
+      await http.get(`${API}/orders/stats`).set(bearer(c.token)).expect(403);
+      await http.get(`${API}/orders/stats`).expect(401);
+    });
+
+    it('TC55 chi tiết đơn: nhân viên thấy khách đặt hàng, khách thì không', async () => {
+      const c = await customer();
+      await addToCart(c.token, await createProduct(100_000, 5), 1);
+      const orderId = (await placeOrder(c.token).expect(201)).body.id as string;
+      const support = await loginAs(Role.SUPPORT);
+
+      const asStaff = await http
+        .get(`${API}/orders/${orderId}`)
+        .set(bearer(support.token))
+        .expect(200);
+      expect(asStaff.body.customer).toMatchObject({
+        id: c.id,
+        fullName: 'CUSTOMER',
+      });
+      expect(asStaff.body.customer.email).toContain(RUN);
+
+      const asCustomer = await http
+        .get(`${API}/orders/${orderId}`)
+        .set(bearer(c.token))
+        .expect(200);
+      expect(asCustomer.body).not.toHaveProperty('customer');
+    });
+
+    it('TC56 tồn kho: lọc sắp hết (lowStock) và số liệu tổng / sắp hết / hết hàng / ngừng bán', async () => {
+      const warehouse = await loginAs(Role.WAREHOUSE);
+      const stats = () =>
+        http
+          .get(`${API}/products/manage/stats`)
+          .set(bearer(warehouse.token))
+          .expect(200)
+          .then(
+            (r) =>
+              r.body as Record<
+                'total' | 'lowStock' | 'outOfStock' | 'inactive',
+                number
+              >,
+          );
+      const before = await stats();
+
+      const low = await createProduct(100_000, 3);
+      await createProduct(100_000, 0);
+      await createProduct(100_000, 50, false);
+      await createProduct(100_000, 50);
+
+      expect(await stats()).toEqual({
+        total: before.total + 4,
+        lowStock: before.lowStock + 1,
+        outOfStock: before.outOfStock + 1,
+        inactive: before.inactive + 1,
+      });
+
+      const lowList = await http
+        .get(`${API}/products/manage?lowStock=true&limit=100&q=${RUN}`)
+        .set(bearer(warehouse.token))
+        .expect(200);
+      const ids = lowList.body.items.map((p: { id: string }) => p.id);
+      expect(ids).toContain(low);
+      expect(
+        lowList.body.items.every(
+          (p: { stock: number }) => p.stock > 0 && p.stock <= 5,
+        ),
+      ).toBe(true);
+
+      const c = await customer();
+      await http
+        .get(`${API}/products/manage/stats`)
+        .set(bearer(c.token))
+        .expect(403);
+      await http
+        .get(`${API}/products/manage?lowStock=maybe`)
+        .set(bearer(warehouse.token))
+        .expect(400);
+    });
+  });
 });
