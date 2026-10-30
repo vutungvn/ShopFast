@@ -21,6 +21,7 @@ import {
   ProductQueryDto,
 } from './dto/product-query.dto';
 import { ProductResponseDto } from './dto/product-response.dto';
+import { UpdateInventoryDto } from './dto/update-inventory.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { ProductsService } from './products.service';
 
@@ -62,6 +63,21 @@ export class ProductsController {
   @Roles(Role.ADMIN)
   create(@Body() dto: CreateProductDto): Promise<ProductResponseDto> {
     return this.products.create(dto);
+  }
+
+  /**
+   * Cập nhật tồn kho (kho, admin). Gửi đúng một trong hai: `stock` đặt lại số tồn (kiểm kê),
+   * hoặc `delta` cộng/trừ (nhập hàng / xuất hỏng). Trừ quá số đang có => 409.
+   */
+  @Patch(':id/inventory')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.WAREHOUSE, Role.ADMIN)
+  updateInventory(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() dto: UpdateInventoryDto,
+  ): Promise<ProductResponseDto> {
+    return this.products.updateInventory(id, dto);
   }
 
   /** Sửa thông tin, giá; ngừng bán bằng `isActive: false` (chỉ ADMIN) */

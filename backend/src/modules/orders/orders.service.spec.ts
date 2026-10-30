@@ -750,3 +750,52 @@ describe('OrdersService.listMine', () => {
     expect(result.items[0].paymentDueAt).toBeInstanceOf(Date);
   });
 });
+
+describe('OrdersService.expireOverdueOrders', () => {
+  function setup(ids: string[], statuses: Record<string, OrderStatus>) {
+    const cancels: Array<[string, string | null, string | null]> = [];
+    const repo = {
+      findOverdueIds: jest.fn().mockResolvedValue(ids),
+      withLockedOrder: jest.fn((id: string, _userId, work) =>
+        work({
+          status: statuses[id],
+          paidAt: null,
+          cancel: jest.fn(async (by: string | null, note: string | null) => {
+            cancels.push([id, by, note]);
+          }),
+          changeStatus: jest.fn(),
+        }),
+      ),
+    } as unknown as jest.Mocked<OrdersRepository>;
+    return { repo, cancels, service: new OrdersService(repo, config) };
+  }
+
+  it('huỷ các đơn quá hạn với người đổi = hệ thống (null), bỏ qua đơn vừa đổi trạng thái', async () => {
+    const { service, cancels } = setup(['a', 'b', 'c'], {
+      a: OrderStatus.PENDING_PAYMENT,
+      b: OrderStatus.CANCELLED,
+      c: OrderStatus.PENDING_PAYMENT,
+    });
+
+    expect(await service.expireOverdueOrders()).toBe(2);
+    expect(cancels).toEqual([
+      ['a', null, 'Tự huỷ do quá hạn thanh toán'],
+      ['c', null, 'Tự huỷ do quá hạn thanh toán'],
+    ]);
+  });
+
+  it('chỉ lấy đơn đặt trước mốc hạn thanh toán, tối đa 100 đơn mỗi lượt', async () => {
+    const { service, repo } = setup([], {});
+    const before = Date.now();
+    await service.expireOverdueOrders();
+
+    const [placedBefore, take] = repo.findOverdueIds.mock.calls[0];
+    expect(take).toBe(100);
+    expect(placedBefore.getTime()).toBeGreaterThanOrEqual(
+      before - TIMEOUT_MINUTES * 60_000,
+    );
+    expect(placedBefore.getTime()).toBeLessThanOrEqual(
+      Date.now() - TIMEOUT_MINUTES * 60_000,
+    );
+  });
+});

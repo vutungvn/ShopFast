@@ -24,6 +24,8 @@ export const envSchema = z.object({
     .int()
     .positive()
     .default(24 * 60),
+  // Worker quét đơn quá hạn thanh toán để tự huỷ sau mỗi khoảng này (giây)
+  ORDER_EXPIRY_SWEEP_SECONDS: z.coerce.number().int().positive().default(60),
 
   SWAGGER_ENABLED: z
     .enum(['true', 'false'])

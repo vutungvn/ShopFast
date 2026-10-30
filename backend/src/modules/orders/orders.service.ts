@@ -41,6 +41,10 @@ import {
 /** Số lần tạo lại mã khi trùng; 32^4 mã/ngày nên trùng 3 lần liên tiếp gần như không thể */
 const MAX_CODE_ATTEMPTS = 3;
 
+/** Số đơn quá hạn tự huỷ mỗi lượt quét; còn thì lượt sau làm tiếp */
+const EXPIRY_BATCH = 100;
+const EXPIRY_NOTE = 'Tự huỷ do quá hạn thanh toán';
+
 /** Nhân viên huỷ đơn phải ghi rõ lý do để khách và CSKH tra lại được */
 const MIN_STAFF_CANCEL_REASON = 5;
 
@@ -245,6 +249,31 @@ export class OrdersService {
       customerActions(order, this.paymentTimeoutMs()),
       { showStaff: true },
     );
+  }
+
+  /**
+   * Tự huỷ các đơn chờ thanh toán đã quá hạn và trả kho (worker gọi định kỳ). Trả về số đơn đã huỷ.
+   * Mỗi đơn vẫn khoá rồi kiểm tra lại trạng thái: khách vừa huỷ, kho vừa xử lý, hay hai worker cùng
+   * quét thì đơn chỉ bị huỷ và trả kho một lần.
+   */
+  async expireOverdueOrders(): Promise<number> {
+    const placedBefore = new Date(Date.now() - this.paymentTimeoutMs());
+    const ids = await this.orders.findOverdueIds(placedBefore, EXPIRY_BATCH);
+    let cancelled = 0;
+    for (const id of ids) {
+      const done = await this.orders.withLockedOrder(
+        id,
+        undefined,
+        async (locked) => {
+          // Đơn quá hạn không thanh toán được nữa, nên chỉ có thể đã bị huỷ trong lúc chờ khoá
+          if (locked?.status !== OrderStatus.PENDING_PAYMENT) return false;
+          await locked.cancel(null, EXPIRY_NOTE);
+          return true;
+        },
+      );
+      if (done) cancelled++;
+    }
+    return cancelled;
   }
 
   private paymentTimeoutMs(): number {

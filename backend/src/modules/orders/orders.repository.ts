@@ -69,8 +69,14 @@ export interface LockedOrder {
   status: OrderStatus;
   /** Đã thanh toán (kể cả khi đơn đã sang bước xử lý sau) => huỷ phải hoàn tiền */
   paidAt: Date | null;
-  /** Chuyển sang CANCELLED, trả kho mọi dòng, ghi lịch sử. Trả về đơn sau khi huỷ */
-  cancel(changedById: string, note: string | null): Promise<OrderWithItems>;
+  /**
+   * Chuyển sang CANCELLED, trả kho mọi dòng, ghi lịch sử. `changedById` null = hệ thống tự huỷ.
+   * Trả về đơn sau khi huỷ
+   */
+  cancel(
+    changedById: string | null,
+    note: string | null,
+  ): Promise<OrderWithItems>;
   /** Đổi sang `toStatus` (bên gọi đã kiểm tra hợp lệ), ghi lịch sử. Trả về chi tiết đơn sau khi đổi */
   changeStatus(
     toStatus: OrderStatus,
@@ -166,6 +172,20 @@ export class OrdersRepository {
       }),
       this.prisma.order.count({ where }),
     ]);
+  }
+
+  /** Đơn chờ thanh toán đặt trước `placedBefore` (đã quá hạn), cũ nhất trước */
+  async findOverdueIds(placedBefore: Date, take: number): Promise<string[]> {
+    const rows = await this.prisma.order.findMany({
+      where: {
+        status: OrderStatus.PENDING_PAYMENT,
+        createdAt: { lte: placedBefore },
+      },
+      select: { id: true },
+      orderBy: { createdAt: 'asc' },
+      take,
+    });
+    return rows.map((row) => row.id);
   }
 
   /** Chi tiết đơn; truyền `userId` để chỉ tìm trong đơn của user đó (khách), bỏ trống cho nhân viên. */

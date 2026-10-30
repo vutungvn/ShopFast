@@ -81,6 +81,42 @@ export class ProductsRepository {
     });
   }
 
+  /** Đặt lại số tồn; sản phẩm chưa có bản ghi tồn kho thì tạo. */
+  async setStock(productId: string, stock: number): Promise<void> {
+    await this.prisma.$executeRaw`
+      INSERT INTO inventories ("productId", stock, "updatedAt")
+      VALUES (${productId}::uuid, ${stock}, now())
+      ON CONFLICT ("productId") DO UPDATE SET stock = EXCLUDED.stock, "updatedAt" = now()`;
+  }
+
+  /**
+   * Cộng/trừ tồn kho nguyên tử, không cho xuống dưới 0 (cùng cách trừ kho khi đặt đơn).
+   * Trừ quá số đang có thì không đổi gì và trả về tồn kho hiện tại.
+   */
+  async adjustStock(
+    productId: string,
+    delta: number,
+  ): Promise<{ ok: true } | { ok: false; stock: number }> {
+    const updated = await this.prisma.$executeRaw`
+      UPDATE inventories SET stock = stock + ${delta}, "updatedAt" = now()
+      WHERE "productId" = ${productId}::uuid AND stock + ${delta} >= 0`;
+    if (updated === 1) return { ok: true };
+
+    const inventory = await this.prisma.inventory.findUnique({
+      where: { productId },
+      select: { stock: true },
+    });
+    // Chưa có bản ghi tồn kho mà nhập thêm: tạo mới (ON CONFLICT phòng request khác vừa tạo)
+    if (!inventory && delta > 0) {
+      await this.prisma.$executeRaw`
+        INSERT INTO inventories ("productId", stock, "updatedAt")
+        VALUES (${productId}::uuid, ${delta}, now())
+        ON CONFLICT ("productId") DO UPDATE SET stock = inventories.stock + ${delta}, "updatedAt" = now()`;
+      return { ok: true };
+    }
+    return { ok: false, stock: inventory?.stock ?? 0 };
+  }
+
   update(
     id: string,
     data: Prisma.ProductUncheckedUpdateInput,

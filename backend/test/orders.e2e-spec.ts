@@ -9,6 +9,7 @@ import { configureApp } from '../src/app.setup';
 import { Env } from '../src/config/env.validation';
 import { PrismaService } from '../src/infra/prisma/prisma.service';
 import * as orderCode from '../src/modules/orders/order-code';
+import { OrdersService } from '../src/modules/orders/orders.service';
 
 // Cần hạ tầng đang chạy: docker compose up -d
 // Dữ liệu test mang tiền tố RUN (slug, email) / RUN viết hoa (SKU) và bị xoá sau khi chạy.
@@ -1293,5 +1294,266 @@ describe('Orders – đặt đơn (e2e)', () => {
         .expect(401);
       expect(await statusOf(o.orderId)).toBe('PAID');
     });
+  });
+
+  describe('Kho cập nhật tồn kho', () => {
+    const inventory = (token: string, productId: string, body: object) =>
+      http
+        .patch(`${API}/products/${productId}/inventory`)
+        .set(bearer(token))
+        .send(body);
+    let warehouse: { id: string; token: string };
+    beforeAll(async () => {
+      warehouse = await loginAs(Role.WAREHOUSE);
+    });
+
+    it('TC46 đặt lại số tồn / cộng / trừ; trừ quá => 409; dữ liệu sai => 400; không có sản phẩm => 404', async () => {
+      const p = await createProduct(100_000, 10);
+
+      const set = await inventory(warehouse.token, p, { stock: 25 }).expect(
+        200,
+      );
+      expect(set.body).toMatchObject({ id: p, stock: 25 });
+      await inventory(warehouse.token, p, { delta: 5 }).expect(200);
+      expect(await stockOf(p)).toBe(30);
+      await inventory(warehouse.token, p, { delta: -30 }).expect(200);
+      expect(await stockOf(p)).toBe(0);
+
+      const over = await inventory(warehouse.token, p, { delta: -1 }).expect(
+        409,
+      );
+      expect(over.body.message).toBe('Không đủ tồn kho để trừ 1 (còn 0)');
+
+      for (const body of [
+        {},
+        { stock: 1, delta: 1 },
+        { delta: 0 },
+        { stock: -1 },
+        { stock: 1.5 },
+        { stock: '5' },
+        { stock: 1, price: 1 },
+      ]) {
+        await inventory(warehouse.token, p, body).expect(400);
+      }
+      expect(await stockOf(p)).toBe(0);
+
+      await inventory(warehouse.token, '00000000-0000-4000-8000-000000000000', {
+        stock: 1,
+      }).expect(404);
+    });
+
+    it('TC47 sản phẩm ngừng bán vẫn sửa được tồn kho; hết hàng nhập thêm thì khách đặt được ngay', async () => {
+      const off = await createProduct(100_000, 0, false);
+      await inventory(warehouse.token, off, { delta: 3 }).expect(200);
+      expect(await stockOf(off)).toBe(3);
+
+      const p = await createProduct(100_000, 0);
+      const c = await customer();
+      await http
+        .post(`${API}/cart/items`)
+        .set(bearer(c.token))
+        .send({ productId: p, quantity: 1 })
+        .expect(409);
+      await inventory(warehouse.token, p, { delta: 2 }).expect(200);
+      await addToCart(c.token, p, 2);
+      await placeOrder(c.token).expect(201);
+      expect(await stockOf(p)).toBe(0);
+    });
+
+    it('TC48 nhập hàng (delta) cùng lúc khách đặt đơn => không mất lượt trừ nào', async () => {
+      const p = await createProduct(100_000, 10);
+      const buyers = await Promise.all(Array.from({ length: 5 }, customer));
+      for (const buyer of buyers) await addToCart(buyer.token, p, 1);
+
+      const responses = await Promise.all([
+        ...buyers.map((buyer) => placeOrder(buyer.token)),
+        inventory(warehouse.token, p, { delta: 10 }),
+      ]);
+
+      expect(responses.map((r) => r.status)).toEqual([
+        201, 201, 201, 201, 201, 200,
+      ]);
+      expect(await stockOf(p)).toBe(10 + 10 - 5);
+    });
+
+    it('TC49 phân quyền: kho và admin sửa tồn kho; khách, CSKH => 403; không token => 401; giá vẫn chỉ ADMIN sửa', async () => {
+      const p = await createProduct(100_000, 10);
+      const admin = await loginAs(Role.ADMIN);
+      const support = await loginAs(Role.SUPPORT);
+      const c = await customer();
+
+      await inventory(admin.token, p, { delta: 1 }).expect(200);
+      await inventory(c.token, p, { delta: 1 }).expect(403);
+      await inventory(support.token, p, { delta: 1 }).expect(403);
+      await http
+        .patch(`${API}/products/${p}/inventory`)
+        .send({ delta: 1 })
+        .expect(401);
+      expect(await stockOf(p)).toBe(11);
+
+      await http
+        .patch(`${API}/products/${p}`)
+        .set(bearer(warehouse.token))
+        .send({ price: 90_000 })
+        .expect(403);
+      await http
+        .patch(`${API}/products/${p}`)
+        .set(bearer(admin.token))
+        .send({ price: 90_000 })
+        .expect(200);
+    });
+  });
+
+  describe('Tự huỷ đơn quá hạn thanh toán', () => {
+    const expire = () => app.get(OrdersService).expireOverdueOrders();
+
+    /** Đơn 2 món (kho 10 → 8). `overdue`: lùi thời điểm đặt thật xa để nằm đầu lượt quét */
+    async function pendingOrder(overdue: boolean) {
+      const c = await customer();
+      const p = await createProduct(100_000, 10);
+      await addToCart(c.token, p, 2);
+      const res = await placeOrder(c.token).expect(201);
+      const orderId = (res.body as OrderBody).id;
+      if (overdue) {
+        await prisma.order.update({
+          where: { id: orderId },
+          data: { createdAt: new Date('2000-01-01T00:00:00Z') },
+        });
+      }
+      return { customer: c, productId: p, orderId };
+    }
+    const orderOf = (id: string) =>
+      prisma.order.findUniqueOrThrow({ where: { id } });
+
+    it('TC50 đơn quá hạn => CANCELLED, trả kho, lịch sử do hệ thống; đơn còn hạn / đã thanh toán giữ nguyên', async () => {
+      const overdue = await pendingOrder(true);
+      const fresh = await pendingOrder(false);
+      const paid = await pendingOrder(false);
+      await http
+        .post(`${API}/orders/${paid.orderId}/pay`)
+        .set(bearer(paid.customer.token))
+        .expect(200);
+      await prisma.order.update({
+        where: { id: paid.orderId },
+        data: { createdAt: new Date('2000-01-01T00:00:00Z') },
+      });
+
+      expect(await expire()).toBeGreaterThanOrEqual(1);
+
+      expect(await orderOf(overdue.orderId)).toMatchObject({
+        status: 'CANCELLED',
+      });
+      expect((await orderOf(overdue.orderId)).cancelledAt).not.toBeNull();
+      expect(await stockOf(overdue.productId)).toBe(10);
+      expect((await orderOf(fresh.orderId)).status).toBe('PENDING_PAYMENT');
+      expect((await orderOf(paid.orderId)).status).toBe('PAID');
+      expect(await stockOf(paid.productId)).toBe(8);
+
+      const detail = await http
+        .get(`${API}/orders/${overdue.orderId}`)
+        .set(bearer(overdue.customer.token))
+        .expect(200);
+      expect(detail.body.timeline.at(-1)).toMatchObject({
+        fromStatus: 'PENDING_PAYMENT',
+        toStatus: 'CANCELLED',
+        actor: 'SYSTEM',
+        note: 'Tự huỷ do quá hạn thanh toán',
+      });
+      expect(detail.body).toMatchObject({ canPay: false, canCancel: false });
+    });
+
+    it('TC51 hai lượt quét chạy cùng lúc (2 worker) => mỗi đơn chỉ huỷ và trả kho 1 lần', async () => {
+      const o = await pendingOrder(true);
+
+      await Promise.all([expire(), expire()]);
+
+      expect((await orderOf(o.orderId)).status).toBe('CANCELLED');
+      expect(await stockOf(o.productId)).toBe(10);
+      expect(
+        await prisma.orderStatusHistory.count({
+          where: { orderId: o.orderId, toStatus: 'CANCELLED' },
+        }),
+      ).toBe(1);
+    });
+
+    it('TC52 khách huỷ đúng lúc worker tự huỷ => chỉ một bên huỷ, kho trả 1 lần', async () => {
+      for (let round = 0; round < 3; round++) {
+        const o = await pendingOrder(true);
+        const [cancelRes] = await Promise.all([
+          http
+            .post(`${API}/orders/${o.orderId}/cancel`)
+            .set(bearer(o.customer.token))
+            .send({}),
+          expire(),
+        ]);
+
+        expect([200, 409]).toContain(cancelRes.status);
+        expect((await orderOf(o.orderId)).status).toBe('CANCELLED');
+        expect(await stockOf(o.productId)).toBe(10);
+      }
+    });
+  });
+
+  it('TC53 luồng đầy đủ: thêm giỏ → đặt → thanh toán → kho xử lý tới giao xong; khách thấy đúng trên lịch sử đơn', async () => {
+    const c = await customer();
+    const warehouse = await loginAs(Role.WAREHOUSE);
+    const phone = await createProduct(20_000_000, 5);
+    const earbuds = await createProduct(2_000_000, 5);
+    await addToCart(c.token, phone, 1);
+    await addToCart(c.token, earbuds, 2);
+
+    const placed = await placeOrder(c.token).expect(201);
+    const orderId = (placed.body as OrderBody).id;
+    expect(placed.body.totalAmount).toBe(24_000_000);
+    expect((await cartLines(c.id)).length).toBe(0);
+
+    await http
+      .post(`${API}/orders/${orderId}/pay`)
+      .set(bearer(c.token))
+      .expect(200);
+    for (const status of ['CONFIRMED', 'PACKING', 'SHIPPING', 'DELIVERED']) {
+      await http
+        .patch(`${API}/orders/${orderId}/status`)
+        .set(bearer(warehouse.token))
+        .send({ status })
+        .expect(200);
+    }
+
+    const [summary] = (
+      await http
+        .get(`${API}/orders/me?status=DELIVERED`)
+        .set(bearer(c.token))
+        .expect(200)
+    ).body.items;
+    expect(summary).toMatchObject({
+      id: orderId,
+      status: 'DELIVERED',
+      itemCount: 2,
+      totalQuantity: 3,
+      canPay: false,
+      canCancel: false,
+    });
+    const detail = await http
+      .get(`${API}/orders/${orderId}`)
+      .set(bearer(c.token))
+      .expect(200);
+    expect(
+      detail.body.timeline.map((t: { toStatus: string }) => t.toStatus),
+    ).toEqual([
+      'PENDING_PAYMENT',
+      'PAID',
+      'CONFIRMED',
+      'PACKING',
+      'SHIPPING',
+      'DELIVERED',
+    ]);
+    expect(await stockOf(phone)).toBe(4);
+    expect(await stockOf(earbuds)).toBe(3);
+
+    await http
+      .post(`${API}/orders/${orderId}/cancel`)
+      .set(bearer(c.token))
+      .send({})
+      .expect(409);
   });
 });
