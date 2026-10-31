@@ -17,7 +17,11 @@ export function ProductCard({ product }: { product: Product }) {
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500',
       )}
     >
-      <ProductImage categorySlug={product.category.slug} className={cn(outOfStock && 'opacity-60')} />
+      <ProductImage
+        categorySlug={product.category.slug}
+        src={product.imageUrl}
+        className={cn(outOfStock && 'opacity-60')}
+      />
       <div className="flex flex-1 flex-col px-1 pt-3 pb-1">
         <p className="text-[11px] font-semibold tracking-wider text-slate-400 uppercase">
           {product.brand.name}

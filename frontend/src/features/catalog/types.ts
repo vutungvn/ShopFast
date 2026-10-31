@@ -21,6 +21,8 @@ export type Product = {
   name: string
   slug: string
   description: string | null
+  /** Ảnh chính (/images/... hoặc https); null => hiện icon theo danh mục */
+  imageUrl: string | null
   /** VND */
   price: number
   isActive: boolean

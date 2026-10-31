@@ -1666,4 +1666,48 @@ describe('Orders – đặt đơn (e2e)', () => {
         .expect(400);
     });
   });
+
+  it('TC57 dòng đơn có ảnh hiện tại của sản phẩm (đặt đơn, chi tiết, thẻ đơn, danh sách của kho)', async () => {
+    const c = await customer();
+    const p = await createProduct(100_000, 5);
+    await prisma.product.update({
+      where: { id: p },
+      data: { imageUrl: '/images/products/laptop/2.webp' },
+    });
+    await addToCart(c.token, p, 1);
+
+    const placed = await placeOrder(c.token).expect(201);
+    expect(placed.body.items[0].productImageUrl).toBe(
+      '/images/products/laptop/2.webp',
+    );
+
+    // Đổi ảnh sản phẩm sau khi đặt: đơn hiện ảnh mới (ảnh không chụp lại vào dòng đơn)
+    await prisma.product.update({
+      where: { id: p },
+      data: { imageUrl: '/images/products/laptop/3.webp' },
+    });
+    const detail = await http
+      .get(`${API}/orders/${placed.body.id}`)
+      .set(bearer(c.token))
+      .expect(200);
+    expect(detail.body.items[0].productImageUrl).toBe(
+      '/images/products/laptop/3.webp',
+    );
+
+    const [summary] = (
+      await http.get(`${API}/orders/me`).set(bearer(c.token)).expect(200)
+    ).body.items;
+    expect(summary.previewItems[0].productImageUrl).toBe(
+      '/images/products/laptop/3.webp',
+    );
+
+    const warehouse = await loginAs(Role.WAREHOUSE);
+    const staffList = await http
+      .get(`${API}/orders?q=${placed.body.code}&status=PENDING_PAYMENT`)
+      .set(bearer(warehouse.token))
+      .expect(200);
+    expect(staffList.body.items[0].previewItems[0].productImageUrl).toBe(
+      '/images/products/laptop/3.webp',
+    );
+  });
 });

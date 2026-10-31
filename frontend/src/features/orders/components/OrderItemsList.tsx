@@ -1,6 +1,6 @@
-import { Package } from 'lucide-react'
 import { Link } from 'react-router'
 import { productPath } from '@/app/paths'
+import { ProductImage } from '@/features/catalog/components/ProductImage'
 import { formatPrice } from '@/lib/format'
 import type { OrderItem } from '../types'
 
@@ -14,10 +14,8 @@ export function OrderItemsList({ items }: OrderItemsListProps) {
     <ul className="divide-y divide-slate-100">
       {items.map((item) => (
         <li key={item.productId} className="flex items-center gap-4 py-4 first:pt-0 last:pb-0">
-          {/* Dòng đơn không lưu danh mục nên dùng icon chung thay cho ảnh */}
-          <span className="flex size-14 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-slate-50 to-slate-100">
-            <Package className="size-7 text-slate-300" strokeWidth={1.25} aria-hidden />
-          </span>
+          {/* Dòng đơn không lưu danh mục: chưa có ảnh thì hiện icon chung */}
+          <ProductImage categorySlug="" src={item.productImageUrl} size="thumb" className="size-14 shrink-0" />
           <div className="min-w-0 flex-1">
             {item.productSlug ? (
               <Link

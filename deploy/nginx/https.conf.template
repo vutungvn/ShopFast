@@ -57,6 +57,13 @@ server {
   location = /health { proxy_pass $api; }
   location /docs     { proxy_pass $api; proxy_set_header Host $host; }
 
+  # Ảnh sản phẩm (frontend/public/images): tên file không có hash nên cache vừa phải;
+  # ảnh không tồn tại trả 404 thay vì rơi xuống index.html của SPA
+  location /images/ {
+    expires 7d;
+    try_files $uri =404;
+  }
+
   location /assets/ {
     expires 1y;
     try_files $uri =404;

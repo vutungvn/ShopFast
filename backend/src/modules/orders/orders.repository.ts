@@ -7,8 +7,12 @@ import {
   CheckoutLine,
 } from '../cart/cart.repository';
 
+// Ảnh lấy theo sản phẩm hiện tại (không chụp lại vào dòng đơn): sản phẩm không bao giờ bị xoá cứng
 const orderInclude = {
-  items: { orderBy: { productName: 'asc' } },
+  items: {
+    orderBy: { productName: 'asc' },
+    include: { product: { select: { imageUrl: true } } },
+  },
 } satisfies Prisma.OrderInclude;
 
 export type OrderWithItems = Prisma.OrderGetPayload<{
@@ -18,7 +22,7 @@ export type OrderWithItems = Prisma.OrderGetPayload<{
 const detailInclude = {
   items: {
     orderBy: { productName: 'asc' },
-    include: { product: { select: { slug: true } } },
+    include: { product: { select: { slug: true, imageUrl: true } } },
   },
   statusHistory: {
     orderBy: { createdAt: 'asc' },

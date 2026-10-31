@@ -597,4 +597,64 @@ describe('Products, Categories, Brands (e2e)', () => {
       await http.delete(`${API}/brands/${sony}`).set(bearer(admin)).expect(404);
     });
   }); // prettier-ignore
+
+  describe('Ảnh sản phẩm', () => {
+    const create = (extra: Record<string, unknown>) =>
+      http
+        .post(`${API}/products`)
+        .set(bearer(admin))
+        .send({
+          sku: `${RUN}-img-${Math.random().toString(36).slice(2, 8)}`,
+          name: `${RUN} Ảnh ${Math.random().toString(36).slice(2, 8)}`,
+          price: 1_000_000,
+          categoryId: cat.dienThoai,
+          brandId: brand.samsung,
+          stock: 3,
+          ...extra,
+        });
+
+    it('TC49 tạo kèm ảnh /images/... => trả imageUrl ở chi tiết, danh sách và màn quản lý', async () => {
+      const res = await create({
+        imageUrl: '/images/products/dien-thoai/1.webp',
+      }).expect(201);
+      expect(res.body.imageUrl).toBe('/images/products/dien-thoai/1.webp');
+
+      const detail = await http
+        .get(`${API}/products/${res.body.slug}`)
+        .expect(200);
+      expect(detail.body.imageUrl).toBe('/images/products/dien-thoai/1.webp');
+      const list = await listProducts({ q: res.body.sku }).expect(200);
+      expect(list.body.items[0].imageUrl).toBe(
+        '/images/products/dien-thoai/1.webp',
+      );
+    });
+
+    it('TC50 không gửi ảnh => imageUrl null; PATCH đổi sang URL https rồi gửi null để bỏ ảnh', async () => {
+      const res = await create({}).expect(201);
+      expect(res.body.imageUrl).toBeNull();
+      const patch = (imageUrl: unknown) =>
+        http
+          .patch(`${API}/products/${res.body.id}`)
+          .set(bearer(admin))
+          .send({ imageUrl });
+
+      expect(
+        (await patch('https://cdn.example.com/a.webp').expect(200)).body
+          .imageUrl,
+      ).toBe('https://cdn.example.com/a.webp');
+      expect((await patch(null).expect(200)).body.imageUrl).toBeNull();
+    });
+
+    it.each([
+      ['http (không mã hoá)', 'http://example.com/a.jpg'],
+      ['javascript:', 'javascript:alert(1)'],
+      ['data:', 'data:image/png;base64,AAAA'],
+      ['có ..', '/images/../etc/passwd'],
+      ['ngoài /images', '/uploads/a.webp'],
+      ['quá 500 ký tự', `https://a.com/${'x'.repeat(500)}`],
+      ['không phải chuỗi', 123],
+    ])('TC51 imageUrl không hợp lệ (%s) => 400', async (_case, imageUrl) => {
+      await create({ imageUrl }).expect(400);
+    });
+  });
 });

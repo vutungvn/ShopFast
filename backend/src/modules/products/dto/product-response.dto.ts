@@ -8,6 +8,8 @@ export class ProductResponseDto {
   name: string;
   slug: string;
   description: string | null;
+  /** Ảnh chính; null => giao diện hiện icon theo danh mục */
+  imageUrl: string | null;
   /** Giá bán (VND) */
   price: number;
   isActive: boolean;
@@ -25,6 +27,7 @@ export class ProductResponseDto {
       name: product.name,
       slug: product.slug,
       description: product.description,
+      imageUrl: product.imageUrl,
       // DECIMAL(12,2) nằm trong khoảng số nguyên an toàn của JS nên đổi sang number không mất chính xác
       price: product.price.toNumber(),
       isActive: product.isActive,

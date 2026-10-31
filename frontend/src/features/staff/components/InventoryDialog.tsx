@@ -85,7 +85,12 @@ function InventoryForm({ product, onClose, onSaved }: { product: Product } & Omi
   return (
     <>
       <div className="flex items-center gap-4 rounded-xl bg-slate-50 p-3">
-        <ProductImage categorySlug={product.category.slug} size="thumb" className="size-14 shrink-0" />
+        <ProductImage
+          categorySlug={product.category.slug}
+          src={product.imageUrl}
+          size="thumb"
+          className="size-14 shrink-0"
+        />
         <div className="min-w-0 flex-1">
           <p className="text-xs text-slate-500">SKU: {product.sku}</p>
           <p className="text-sm text-slate-600">{product.category.name} · {product.brand.name}</p>

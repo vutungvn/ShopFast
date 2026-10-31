@@ -14,6 +14,7 @@ const product = (
   name: `Sản phẩm ${id}`,
   slug: `san-pham-${id}`,
   description: null,
+  imageUrl: null,
   price: new Prisma.Decimal(price),
   isActive,
   categoryId: 'c1',

@@ -211,6 +211,7 @@ function CheckoutForm({ user, cart }: { user: User; cart: Cart }) {
                   )}
                   <ProductImage
                     categorySlug={item.product.category.slug}
+                    src={item.product.imageUrl}
                     size="thumb"
                     className={cn('size-16 shrink-0', unavailable && 'opacity-60')}
                   />

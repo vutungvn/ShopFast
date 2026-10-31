@@ -128,7 +128,7 @@ function ProductDetail({ product }: { product: Product }) {
       />
 
       <section className="mt-5 grid gap-8 rounded-2xl border border-slate-200 bg-white p-5 sm:p-8 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] lg:gap-12">
-        <ProductImage categorySlug={product.category.slug} size="detail" />
+        <ProductImage categorySlug={product.category.slug} src={product.imageUrl} alt={product.name} size="detail" />
 
         <div className="flex flex-col">
           <Link
