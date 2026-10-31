@@ -1,0 +1,42 @@
+# Tự deploy lên EC2 sau khi CI trên main xanh (hoặc chạy tay: Actions → Deploy → Run workflow)
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+# Mỗi lúc chỉ một lần deploy; lần sau xếp hàng chờ
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy production
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: production
+      url: https://shopfast.3utilities.com
+    steps:
+      - name: SSH vào EC2 và chạy deploy
+        env:
+          SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts
+          # Khoá deploy bị ép chạy deploy/deploy.sh nên không cần truyền lệnh
+          ssh -i ~/.ssh/deploy_key -o ServerAliveInterval=30 "ubuntu@$HOST"
+
+      - name: Kiểm tra website
+        run: curl -fsS --retry 10 --retry-delay 6 https://shopfast.3utilities.com/health
