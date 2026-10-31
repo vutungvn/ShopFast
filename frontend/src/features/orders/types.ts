@@ -18,6 +18,8 @@ export type OrderItem = {
   unitPrice: number
   quantity: number
   lineTotal: number
+  /** Ảnh hiện tại của sản phẩm */
+  productImageUrl: string | null
 }
 
 /** Khớp OrderResponseDto (đặt đơn, thanh toán, huỷ) */
@@ -54,7 +56,7 @@ export type OrderSummary = CustomerActions & {
   itemCount: number
   totalQuantity: number
   /** Tối đa 3 dòng đầu */
-  previewItems: Array<Pick<OrderItem, 'productId' | 'productName' | 'unitPrice' | 'quantity'>>
+  previewItems: Array<Pick<OrderItem, 'productId' | 'productName' | 'unitPrice' | 'quantity' | 'productImageUrl'>>
   createdAt: string
 }
 

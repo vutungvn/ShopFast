@@ -14,6 +14,7 @@ import {
 import { SLUG_PATTERN } from '../../../common/utils/slug';
 import { IsOptionalNonNull, trim } from '../../../common/validation/transforms';
 import { MAX_PRICE, SKU_PATTERN, toUpperSku } from './create-product.dto';
+import { IsImageUrl } from './image-url';
 
 /**
  * Chỉ cập nhật các field được gửi. Tồn kho không sửa ở đây (thuộc nghiệp vụ kho).
@@ -47,6 +48,13 @@ export class UpdateProductDto {
   @IsString({ message: 'Mô tả không hợp lệ' })
   @MaxLength(5000, { message: 'Mô tả tối đa 5000 ký tự' })
   description?: string | null;
+
+  /** `null` => bỏ ảnh (giao diện hiện icon theo danh mục) */
+  @IsOptional()
+  @Transform(trim)
+  @IsString({ message: 'imageUrl không hợp lệ' })
+  @IsImageUrl()
+  imageUrl?: string | null;
 
   @IsOptionalNonNull()
   @IsNumber({ maxDecimalPlaces: 2 }, { message: 'Giá phải là số' })

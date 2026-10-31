@@ -232,6 +232,7 @@ export function InventoryPage() {
                         <div className="flex items-center gap-3">
                           <ProductImage
                             categorySlug={p.category.slug}
+                            src={p.imageUrl}
                             size="thumb"
                             className={cn('size-11 shrink-0 [&>svg]:size-6', !p.isActive && 'opacity-50')}
                           />

@@ -1,5 +1,5 @@
 /**
- * Seed dữ liệu danh mục, thương hiệu, sản phẩm, tài khoản mẫu và đơn hàng.
+ * Seed dữ liệu danh mục, thương hiệu, sản phẩm (kèm ảnh), tài khoản mẫu và đơn hàng.
  *   npm run db:seed                       # 200 sản phẩm, 20 khách, 120 đơn (mặc định)
  *   SEED_PRODUCTS=1000 npm run db:seed    # số lượng tuỳ chọn
  *   SEED_CUSTOMERS=50 SEED_ORDERS=300 SEED_PASSWORD=... npm run db:seed
@@ -12,6 +12,15 @@ import { seedAccountsAndOrders } from './seed-orders';
 
 const prisma = new PrismaClient();
 const PRODUCT_COUNT = Number(process.env.SEED_PRODUCTS ?? 200);
+
+/** Mỗi danh mục lá có 6 ảnh: frontend/public/images/products/<slug-danh-mục>/1..6.webp */
+const IMAGES_PER_CATEGORY = 6;
+
+/** Ảnh cố định theo SKU (SF-00007 => ảnh số 2): chạy lại seed vẫn ra đúng ảnh cũ */
+function productImageUrl(categorySlug: string, sku: string) {
+  const n = (Number(sku.replace(/\D/g, '')) % IMAGES_PER_CATEGORY) + 1;
+  return `/images/products/${categorySlug}/${n}.webp`;
+}
 
 /** mulberry32: PRNG đơn giản, có seed để dữ liệu lặp lại được. */
 function createRandom(seed: number) {
@@ -119,12 +128,12 @@ async function upsertCategory(name: string, parentId?: string) {
 
 async function main() {
   // 1. Danh mục 2 cấp
-  const leaves: { id: string; spec: LeafCategory }[] = [];
+  const leaves: { id: string; slug: string; spec: LeafCategory }[] = [];
   for (const [rootName, children] of Object.entries(CATALOG)) {
     const root = await upsertCategory(rootName);
     for (const spec of children) {
       const leaf = await upsertCategory(spec.name, root.id);
-      leaves.push({ id: leaf.id, spec });
+      leaves.push({ id: leaf.id, slug: leaf.slug, spec });
     }
   }
 
@@ -144,7 +153,7 @@ async function main() {
   // 3. Sản phẩm: ~10% hết hàng, ~5% ngừng bán
   let created = 0;
   for (let i = 1; i <= PRODUCT_COUNT; i++) {
-    const { id: categoryId, spec } = pick(leaves);
+    const { id: categoryId, slug: categorySlug, spec } = pick(leaves);
     const brandName = pick(spec.brands);
     const sku = `SF-${String(i).padStart(5, '0')}`;
     const name = `${spec.name} ${brandName} ${pick(spec.models)} ${pick(spec.variants)}`;
@@ -161,6 +170,7 @@ async function main() {
         name,
         slug: `${slugify(name)}-${sku.toLowerCase()}`,
         description: `${name} chính hãng ${brandName}, bảo hành 12 tháng.`,
+        imageUrl: productImageUrl(categorySlug, sku),
         price,
         isActive,
         categoryId,
@@ -176,7 +186,24 @@ async function main() {
       `thêm ${created}/${PRODUCT_COUNT} sản phẩm (phần còn lại đã có sẵn).`,
   );
 
-  // 4. Tài khoản mẫu + đơn hàng ở đủ các trạng thái
+  // 4. Bổ sung ảnh cho sản phẩm thuộc các danh mục lá mà chưa có ảnh (vd tạo trước khi có cột ảnh).
+  // Sản phẩm đã có ảnh (kể cả ảnh admin tự đặt) giữ nguyên.
+  const missingImages = await prisma.product.findMany({
+    where: {
+      imageUrl: null,
+      category: { slug: { in: leaves.map((l) => l.slug) } },
+    },
+    select: { id: true, sku: true, category: { select: { slug: true } } },
+  });
+  for (const product of missingImages) {
+    await prisma.product.update({
+      where: { id: product.id },
+      data: { imageUrl: productImageUrl(product.category.slug, product.sku) },
+    });
+  }
+  console.log(`Bổ sung ảnh cho ${missingImages.length} sản phẩm chưa có ảnh.`);
+
+  // 5. Tài khoản mẫu + đơn hàng ở đủ các trạng thái
   const seeded = await seedAccountsAndOrders(prisma, random);
   console.log(
     `Tài khoản mẫu (mật khẩu ${seeded.password}): ${seeded.staff.join(', ')}, ` +

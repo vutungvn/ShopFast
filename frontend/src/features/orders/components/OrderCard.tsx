@@ -5,6 +5,7 @@ import { orderPath, orderPaymentPath } from '@/app/paths'
 import { Button } from '@/components/ui/Button'
 import { buttonClasses } from '@/components/ui/button-styles'
 import { CopyButton } from '@/components/ui/CopyButton'
+import { ProductImage } from '@/features/catalog/components/ProductImage'
 import { cn } from '@/lib/cn'
 import { formatDateTime, formatDuration, formatPrice } from '@/lib/format'
 import type { OrderSummary } from '../types'
@@ -72,9 +73,7 @@ export function OrderCard({ order, now, onCancel }: OrderCardProps) {
         <ul className="space-y-3">
           {order.previewItems.map((item) => (
             <li key={item.productId} className={cn('flex items-center gap-4', cancelled && 'opacity-60')}>
-              <span className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-slate-50 to-slate-100 text-xs font-semibold text-slate-400">
-                x{item.quantity}
-              </span>
+              <ProductImage categorySlug="" src={item.productImageUrl} size="thumb" className="size-12 shrink-0" />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium text-slate-900">{item.productName}</p>
                 <p className="text-xs text-slate-500">

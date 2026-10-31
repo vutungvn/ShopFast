@@ -21,6 +21,7 @@ const product: ProductWithRelations = {
   name: 'Samsung Galaxy S24',
   slug: 'samsung-galaxy-s24',
   description: null,
+  imageUrl: '/images/products/dien-thoai/1.webp',
   price: new Prisma.Decimal('22990000.00'),
   isActive: true,
   categoryId: 'c1',

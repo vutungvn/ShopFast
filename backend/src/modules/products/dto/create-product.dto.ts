@@ -15,6 +15,7 @@ import {
 } from 'class-validator';
 import { SLUG_PATTERN } from '../../../common/utils/slug';
 import { trim } from '../../../common/validation/transforms';
+import { IsImageUrl } from './image-url';
 
 /** Giới hạn của cột DECIMAL(12, 2) */
 export const MAX_PRICE = 9_999_999_999.99;
@@ -54,6 +55,16 @@ export class CreateProductDto {
   @IsString({ message: 'Mô tả không hợp lệ' })
   @MaxLength(5000, { message: 'Mô tả tối đa 5000 ký tự' })
   description?: string;
+
+  /**
+   * Ảnh chính: đường dẫn /images/... hoặc URL https
+   * @example /images/products/dien-thoai/1.webp
+   */
+  @IsOptional()
+  @Transform(trim)
+  @IsString({ message: 'imageUrl không hợp lệ' })
+  @IsImageUrl()
+  imageUrl?: string;
 
   /**
    * Giá bán (VND)

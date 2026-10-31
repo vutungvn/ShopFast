@@ -11,6 +11,8 @@ export class OrderItemResponseDto {
   unitPrice: number;
   quantity: number;
   lineTotal: number;
+  /** Ảnh hiện tại của sản phẩm */
+  productImageUrl: string | null;
 }
 
 export class OrderResponseDto {
@@ -45,6 +47,7 @@ export class OrderResponseDto {
         unitPrice: item.unitPrice.toNumber(),
         quantity: item.quantity,
         lineTotal: item.unitPrice.mul(item.quantity).toNumber(),
+        productImageUrl: item.product.imageUrl,
       })),
       subtotal: order.totalAmount.sub(order.shippingFee).toNumber(),
       shippingFee: order.shippingFee.toNumber(),
@@ -72,6 +75,7 @@ export class OrderPreviewItemDto {
   productName: string;
   unitPrice: number;
   quantity: number;
+  productImageUrl: string | null;
 }
 
 /** Một đơn trong danh sách "Đơn mua": đủ để vẽ thẻ đơn, không cần tải chi tiết */
@@ -107,6 +111,7 @@ export class OrderSummaryDto {
         productName: item.productName,
         unitPrice: item.unitPrice.toNumber(),
         quantity: item.quantity,
+        productImageUrl: item.product.imageUrl,
       })),
       ...actions,
       createdAt: order.createdAt,

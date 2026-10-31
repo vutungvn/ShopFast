@@ -65,6 +65,7 @@ export function CartItemRow({ item, onQuantityChange, onRemove, pending = false 
       <div className="flex gap-4">
         <ProductImage
           categorySlug={product.category.slug}
+          src={product.imageUrl}
           size="thumb"
           className={cn('size-18 shrink-0 sm:size-24', unavailable && 'opacity-60')}
         />

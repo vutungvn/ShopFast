@@ -60,6 +60,7 @@ function savedOrder(order: NewOrder): OrderWithItems {
       id: `i${i}`,
       orderId: 'o1',
       ...item,
+      product: { imageUrl: null },
     })),
   };
 }
@@ -618,7 +619,13 @@ describe('OrdersService.getDetail', () => {
     return {
       ...base,
       status: OrderStatus.CANCELLED,
-      items: base.items.map((item) => ({ ...item, product: { slug: 'sp-1' } })),
+      items: base.items.map((item) => ({
+        ...item,
+        product: {
+          slug: 'sp-1',
+          imageUrl: '/images/products/dien-thoai/1.webp',
+        },
+      })),
       user: { id: 'u1', fullName: 'Nguyễn Văn An', email: 'an@shopfast.vn' },
       statusHistory: [
         history(null, OrderStatus.PENDING_PAYMENT, customerUser),
@@ -679,6 +686,7 @@ describe('OrdersService.getDetail', () => {
     expect(order.timeline.every((t) => !('changedBy' in t))).toBe(true);
     expect(order).not.toHaveProperty('customer');
     expect(order.items[0]).toMatchObject({
+      productImageUrl: '/images/products/dien-thoai/1.webp',
       productSlug: 'sp-1',
       lineTotal: 300,
     });
