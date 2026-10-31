@@ -1,0 +1,123 @@
+# Bản production: chạy thử ở máy (DEP-04) và chạy trên EC2.
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+# Chỉ dịch vụ web mở cổng ra ngoài; Postgres và Redis chỉ trong mạng nội bộ Docker.
+name: shopfast-prod
+
+x-backend-env: &backend-env
+  NODE_ENV: production
+  PORT: 3000
+  DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+  REDIS_URL: redis://redis:6379
+  JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+  JWT_ACCESS_TTL_SECONDS: 900
+  REFRESH_TOKEN_TTL_DAYS: 7
+  BCRYPT_SALT_ROUNDS: 12
+  ORDER_PAYMENT_TIMEOUT_MINUTES: ${ORDER_PAYMENT_TIMEOUT_MINUTES:-1440}
+  ORDER_EXPIRY_SWEEP_SECONDS: 60
+  SWAGGER_ENABLED: "true"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Chạy migration một lần rồi thoát; api và worker chỉ khởi động khi bước này thành công
+  migrate:
+    image: ${API_IMAGE:-shopfast-api:local}
+    command: ["npx", "prisma", "migrate", "deploy"]
+    environment: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: ${API_IMAGE:-shopfast-api:local}
+    build:
+      context: ./backend
+      target: runtime
+    command: ["node", "dist/main"]
+    restart: unless-stopped
+    environment: *backend-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  worker:
+    image: ${API_IMAGE:-shopfast-api:local}
+    command: ["node", "dist/worker"]
+    restart: unless-stopped
+    environment: *backend-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  web:
+    image: ${WEB_IMAGE:-shopfast-web:local}
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-80}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # Công cụ chạy tay (không tự khởi động): seed dữ liệu demo. Cần thư viện dev (ts-node) nên dùng tầng build
+  seed:
+    profiles: ["tools"]
+    image: shopfast-api-tools:local
+    build:
+      context: ./backend
+      target: build
+    command: ["npm", "run", "db:seed"]
+    environment:
+      <<: *backend-env
+      NODE_ENV: development
+      SEED_PASSWORD: ${SEED_PASSWORD}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
+  redisdata:
