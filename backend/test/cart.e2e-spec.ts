@@ -6,6 +6,7 @@ import { randomUUID } from 'crypto';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.setup';
+import { CacheService } from '../src/infra/cache/cache.service';
 import { PrismaService } from '../src/infra/prisma/prisma.service';
 
 // Cần hạ tầng đang chạy: docker compose up -d
@@ -127,6 +128,8 @@ describe('Cart (e2e)', () => {
     product.OFF = await createProduct('OFF', 5_000_000, 10, false);
     product.RACE = await createProduct('RACE', 1_000_000, 5);
     product.EDIT = await createProduct('EDIT', 2_000_000, 10);
+    // Dữ liệu ghi thẳng vào DB, không qua API nên cache không tự làm mới
+    await app.get(CacheService).clear();
   });
 
   afterAll(async () => {
@@ -135,6 +138,7 @@ describe('Cart (e2e)', () => {
     await prisma.product.deleteMany({ where: { sku: { startsWith: SKU } } });
     await prisma.category.deleteMany({ where: { slug: { startsWith: RUN } } });
     await prisma.brand.deleteMany({ where: { slug: { startsWith: RUN } } });
+    await app.get(CacheService).clear();
     await app.close();
   });
 

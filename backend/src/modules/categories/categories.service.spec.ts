@@ -4,6 +4,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Category, Prisma } from '@prisma/client';
+import { CacheService } from '../../infra/cache/cache.service';
+import { ProductCacheService } from '../products/product-cache.service';
 import { CategoriesRepository } from './categories.repository';
 import { CategoriesService } from './categories.service';
 import { buildCategoryTree, collectDescendantIds } from './category-tree';
@@ -47,6 +49,8 @@ describe('category-tree', () => {
 
 describe('CategoriesService', () => {
   let repo: jest.Mocked<CategoriesRepository>;
+  let cache: jest.Mocked<CacheService>;
+  let productCache: jest.Mocked<ProductCacheService>;
   let service: CategoriesService;
 
   beforeEach(() => {
@@ -61,7 +65,17 @@ describe('CategoriesService', () => {
       countChildren: jest.fn().mockResolvedValue(0),
       countProducts: jest.fn().mockResolvedValue(0),
     } as unknown as jest.Mocked<CategoriesRepository>;
-    service = new CategoriesService(repo);
+    cache = {
+      getOrSet: jest.fn((_key, _options, load) =>
+        load().then((value: unknown) => ({ value, status: 'MISS' })),
+      ),
+      delete: jest.fn(),
+    } as unknown as jest.Mocked<CacheService>;
+    productCache = {
+      invalidateByCategory: jest.fn(),
+      invalidateByBrand: jest.fn(),
+    } as unknown as jest.Mocked<ProductCacheService>;
+    service = new CategoriesService(repo, cache, productCache);
   });
 
   it('findIdsWithDescendants: slug không tồn tại => null', async () => {
@@ -143,5 +157,37 @@ describe('CategoriesService', () => {
   it('xoá danh mục rỗng', async () => {
     await service.remove('laptop');
     expect(repo.delete).toHaveBeenCalledWith('laptop');
+    expect(cache.delete).toHaveBeenCalledWith('cat:tree');
+  });
+
+  describe('cache', () => {
+    it('cây danh mục đọc qua cache khoá cat:tree', async () => {
+      const tree = await service.tree();
+      expect(cache.getOrSet).toHaveBeenCalledWith(
+        'cat:tree',
+        { group: 'cat', ttl: 3600 },
+        expect.any(Function),
+      );
+      expect(tree.map((n) => n.slug)).toEqual(['dien-tu', 'thoi-trang']);
+    });
+
+    it('tạo => xoá cache cây', async () => {
+      repo.create.mockImplementation(async (data) => data as Category);
+      await service.create({ name: 'Máy tính bảng' });
+      expect(cache.delete).toHaveBeenCalledWith('cat:tree');
+    });
+
+    it('sửa => xoá cache cây và làm mới sản phẩm thuộc danh mục', async () => {
+      await service.update('laptop', { name: 'Máy tính xách tay' });
+      expect(cache.delete).toHaveBeenCalledWith('cat:tree');
+      expect(productCache.invalidateByCategory).toHaveBeenCalledWith('laptop');
+    });
+
+    it('sửa lỗi => không đụng cache', async () => {
+      repo.update.mockRejectedValue(new Error('db'));
+      await expect(service.update('laptop', { name: 'X' })).rejects.toThrow();
+      expect(cache.delete).not.toHaveBeenCalled();
+      expect(productCache.invalidateByCategory).not.toHaveBeenCalled();
+    });
   });
 });

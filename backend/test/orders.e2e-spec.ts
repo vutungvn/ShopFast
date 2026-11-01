@@ -7,6 +7,7 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.setup';
 import { Env } from '../src/config/env.validation';
+import { CacheService } from '../src/infra/cache/cache.service';
 import { PrismaService } from '../src/infra/prisma/prisma.service';
 import * as orderCode from '../src/modules/orders/order-code';
 import { OrdersService } from '../src/modules/orders/orders.service';
@@ -134,6 +135,8 @@ describe('Orders – đặt đơn (e2e)', () => {
         data: { name: `${RUN} Apple`, slug: `${RUN}-apple` },
       })
     ).id;
+    // Dữ liệu ghi thẳng vào DB, không qua API nên cache không tự làm mới
+    await app.get(CacheService).clear();
   });
 
   afterAll(async () => {
@@ -145,6 +148,7 @@ describe('Orders – đặt đơn (e2e)', () => {
     await prisma.product.deleteMany({ where: { sku: { startsWith: SKU } } });
     await prisma.category.deleteMany({ where: { slug: { startsWith: RUN } } });
     await prisma.brand.deleteMany({ where: { slug: { startsWith: RUN } } });
+    await app.get(CacheService).clear();
     await app.close();
   });
 

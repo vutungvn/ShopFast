@@ -2,15 +2,18 @@ import {
   Body,
   Controller,
   Get,
+  NotFoundException,
   Param,
   ParseUUIDPipe,
   Patch,
   Post,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
+import { Response } from 'express';
 import { PaginatedResult } from '../../common/dto/pagination.dto';
 import { JwtAuthGuard } from '../../common/auth/jwt-auth.guard';
 import { Roles } from '../../common/auth/roles.decorator';
@@ -31,12 +34,18 @@ import { ProductsService } from './products.service';
 export class ProductsController {
   constructor(private readonly products: ProductsService) {}
 
-  /** Danh sách sản phẩm đang bán: lọc theo danh mục, thương hiệu, khoảng giá; phân trang (công khai) */
+  /**
+   * Danh sách sản phẩm đang bán: lọc theo danh mục, thương hiệu, khoảng giá; phân trang (công khai).
+   * Header `X-Cache`: HIT (từ Redis), MISS (đọc DB), BYPASS (Redis lỗi, đọc thẳng DB).
+   */
   @Get()
-  list(
+  async list(
     @Query() query: ProductQueryDto,
+    @Res({ passthrough: true }) res: Response,
   ): Promise<PaginatedResult<ProductResponseDto>> {
-    return this.products.listPublic(query);
+    const { value, status } = await this.products.listPublic(query);
+    res.setHeader('X-Cache', status);
+    return value;
   }
 
   /** Danh sách cho nhân viên, gồm cả sản phẩm ngừng bán (ADMIN, WAREHOUSE) */
@@ -60,10 +69,17 @@ export class ProductsController {
     return this.products.stockStats();
   }
 
-  /** Chi tiết sản phẩm đang bán theo slug (công khai) */
+  /** Chi tiết sản phẩm đang bán theo slug (công khai), có header `X-Cache` như danh sách */
   @Get(':slug')
-  detail(@Param('slug') slug: string): Promise<ProductResponseDto> {
-    return this.products.getBySlug(slug);
+  async detail(
+    @Param('slug') slug: string,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<ProductResponseDto> {
+    const { value, status } = await this.products.findPublicBySlug(slug);
+    // Gắn cả khi 404: slug lạ cũng được cache để không xuống DB liên tục
+    res.setHeader('X-Cache', status);
+    if (!value) throw new NotFoundException('Không tìm thấy sản phẩm');
+    return value;
   }
 
   /** Tạo sản phẩm kèm tồn kho ban đầu (chỉ ADMIN) */
