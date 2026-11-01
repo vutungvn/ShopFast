@@ -19,6 +19,8 @@ export function useProduct(slug: string) {
   return useQuery({
     queryKey: ['product', slug],
     queryFn: () => catalogApi.getProduct(slug),
+    // Giá và tồn kho phải mới nhất mỗi lần mở trang; server đã có cache nên gọi lại không tốn
+    staleTime: 0,
   })
 }
 

@@ -6,6 +6,7 @@ import { randomUUID } from 'crypto';
 import request, { Response } from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.setup';
+import { CacheService } from '../src/infra/cache/cache.service';
 import { PrismaService } from '../src/infra/prisma/prisma.service';
 
 // Cần hạ tầng đang chạy: docker compose up -d
@@ -118,6 +119,8 @@ describe('Products, Categories, Brands (e2e)', () => {
     admin = await tokenFor(Role.ADMIN);
     warehouse = await tokenFor(Role.WAREHOUSE);
     customer = await tokenFor(Role.CUSTOMER);
+    // Dữ liệu ghi thẳng vào DB, không qua API nên cache không tự làm mới
+    await app.get(CacheService).clear();
   }); // prettier-ignore
 
   afterAll(async () => {
@@ -127,6 +130,7 @@ describe('Products, Categories, Brands (e2e)', () => {
     await prisma.category.deleteMany({ where: ours });
     await prisma.brand.deleteMany({ where: ours });
     await prisma.user.deleteMany({ where: { email: { in: emails } } });
+    await app.get(CacheService).clear();
     await app.close();
   });
 

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { validateEnv } from './config/env.validation';
+import { CacheModule } from './infra/cache/cache.module';
 import { PrismaModule } from './infra/prisma/prisma.module';
 import { RedisModule } from './infra/redis/redis.module';
 
@@ -10,6 +11,7 @@ import { RedisModule } from './infra/redis/redis.module';
     ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }),
     PrismaModule,
     RedisModule,
+    CacheModule,
   ],
 })
 export class CoreModule {}

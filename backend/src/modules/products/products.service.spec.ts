@@ -8,6 +8,7 @@ import { plainToInstance } from 'class-transformer';
 import { BrandsService } from '../brands/brands.service';
 import { CategoriesService } from '../categories/categories.service';
 import { CreateProductDto } from './dto/create-product.dto';
+import { ProductCacheService } from './product-cache.service';
 import { ProductQueryDto, ProductSort } from './dto/product-query.dto';
 import {
   ProductsRepository,
@@ -57,6 +58,7 @@ describe('ProductsService', () => {
     Pick<CategoriesService, 'findIdsWithDescendants' | 'exists'>
   >;
   let brands: jest.Mocked<Pick<BrandsService, 'exists'>>;
+  let cache: jest.Mocked<ProductCacheService>;
   let service: ProductsService;
 
   beforeEach(() => {
@@ -74,10 +76,21 @@ describe('ProductsService', () => {
       exists: jest.fn().mockResolvedValue(true),
     };
     brands = { exists: jest.fn().mockResolvedValue(true) };
+    // Cache giả: luôn trượt, đọc thẳng nguồn
+    const miss = async <T>(_key: unknown, load: () => Promise<T>) => ({
+      value: await load(),
+      status: 'MISS' as const,
+    });
+    cache = {
+      detail: jest.fn(miss),
+      list: jest.fn(miss),
+      invalidate: jest.fn(),
+    } as unknown as jest.Mocked<ProductCacheService>;
     service = new ProductsService(
       repo,
       categories as unknown as CategoriesService,
       brands as unknown as BrandsService,
+      cache,
     );
   });
 
@@ -90,12 +103,17 @@ describe('ProductsService', () => {
         skip: 0,
         take: 20,
       });
-      expect(res.meta).toEqual({ page: 1, limit: 20, total: 1, totalPages: 1 });
+      expect(res.value.meta).toEqual({
+        page: 1,
+        limit: 20,
+        total: 1,
+        totalPages: 1,
+      });
     });
 
     it('trả giá dạng number và tồn kho', async () => {
       const res = await service.listPublic(query());
-      expect(res.items[0]).toMatchObject({ price: 22990000, stock: 7 });
+      expect(res.value.items[0]).toMatchObject({ price: 22990000, stock: 7 });
     });
 
     it('lọc theo danh mục cha => truyền id của cả danh mục con', async () => {
@@ -113,17 +131,18 @@ describe('ProductsService', () => {
       const res = await service.listPublic(
         query({ category: 'khong-co', page: '2', limit: '5' }),
       );
-      expect(res).toEqual({
+      expect(res.value).toEqual({
         items: [],
         meta: { page: 2, limit: 5, total: 0, totalPages: 0 },
       });
       expect(repo.list).not.toHaveBeenCalled();
     });
 
-    it('minPrice > maxPrice => 400', async () => {
+    it('minPrice > maxPrice => 400, không đụng tới cache', async () => {
       await expect(
         service.listPublic(query({ minPrice: '500', maxPrice: '100' })),
       ).rejects.toThrow(BadRequestException);
+      expect(cache.list).not.toHaveBeenCalled();
     });
 
     it('chuyển đủ bộ lọc và tính skip theo trang', async () => {
@@ -165,21 +184,48 @@ describe('ProductsService', () => {
     );
   });
 
-  describe('getBySlug', () => {
-    it('không tồn tại => 404', async () => {
-      repo.findBySlug.mockResolvedValue(null);
-      await expect(service.getBySlug('x')).rejects.toThrow(NotFoundException);
+  describe('findPublicBySlug', () => {
+    it('đọc qua cache theo slug', async () => {
+      const res = await service.findPublicBySlug(product.slug);
+      expect(cache.detail).toHaveBeenCalledWith(
+        product.slug,
+        expect.any(Function),
+      );
+      expect(res).toEqual({
+        value: expect.objectContaining({ id: 'p1', price: 22990000 }),
+        status: 'MISS',
+      });
     });
 
-    it('đã ngừng bán => 404 với khách', async () => {
-      repo.findBySlug.mockResolvedValue({ ...product, isActive: false });
-      await expect(service.getBySlug(product.slug)).rejects.toThrow(
-        NotFoundException,
-      );
+    it('không tồn tại => null (cache cả kết quả rỗng)', async () => {
+      repo.findBySlug.mockResolvedValue(null);
+      expect((await service.findPublicBySlug('x')).value).toBeNull();
     });
+
+    it('đã ngừng bán => null với khách', async () => {
+      repo.findBySlug.mockResolvedValue({ ...product, isActive: false });
+      expect((await service.findPublicBySlug(product.slug)).value).toBeNull();
+    });
+
+    it.each(['Viet-Hoa', 'co dau cach', 'a'.repeat(221)])(
+      'slug sai định dạng "%s" => null, không đụng cache lẫn DB',
+      async (slug) => {
+        expect(await service.findPublicBySlug(slug)).toEqual({
+          value: null,
+          status: 'BYPASS',
+        });
+        expect(cache.detail).not.toHaveBeenCalled();
+        expect(repo.findBySlug).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('create', () => {
+    it('tạo xong => làm mới cache (xoá cả kết quả "không có" của slug)', async () => {
+      await service.create(createDto);
+      expect(cache.invalidate).toHaveBeenCalledWith(['p1']);
+    });
+
     it('tự sinh slug từ tên và tạo kèm tồn kho', async () => {
       await service.create({ ...createDto, name: 'Nồi cơm điện Sharp 1.8L' });
       expect(repo.create).toHaveBeenCalledWith(
@@ -237,6 +283,21 @@ describe('ProductsService', () => {
         expect.objectContaining({ price: 19990000, name: undefined }),
       );
     });
+
+    it('sửa xong => làm mới cache theo cả slug cũ', async () => {
+      repo.update.mockResolvedValue({ ...product, slug: 'slug-moi' });
+      await service.update('p1', { slug: 'slug-moi' });
+      expect(cache.invalidate).toHaveBeenCalledWith(
+        ['p1'],
+        ['samsung-galaxy-s24'],
+      );
+    });
+
+    it('lỗi khi lưu => không làm mới cache', async () => {
+      repo.update.mockRejectedValue(new Error('db'));
+      await expect(service.update('p1', { price: 1 })).rejects.toThrow('db');
+      expect(cache.invalidate).not.toHaveBeenCalled();
+    });
   });
 
   describe('updateInventory', () => {
@@ -258,9 +319,10 @@ describe('ProductsService', () => {
       ).rejects.toThrow(NotFoundException);
     });
 
-    it('stock => đặt lại số tồn, trả sản phẩm sau khi đổi', async () => {
+    it('stock => đặt lại số tồn, làm mới cache, trả sản phẩm sau khi đổi', async () => {
       const res = await service.updateInventory('p1', { stock: 0 });
       expect(repo.setStock).toHaveBeenCalledWith('p1', 0);
+      expect(cache.invalidate).toHaveBeenCalledWith(['p1']);
       expect(res.id).toBe('p1');
     });
 
@@ -274,6 +336,7 @@ describe('ProductsService', () => {
       const err = service.updateInventory('p1', { delta: -5 });
       await expect(err).rejects.toThrow(ConflictException);
       await expect(err).rejects.toThrow('Không đủ tồn kho để trừ 5 (còn 2)');
+      expect(cache.invalidate).not.toHaveBeenCalled();
     });
   });
 });

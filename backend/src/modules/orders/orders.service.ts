@@ -11,6 +11,7 @@ import { paginate, PaginatedResult } from '../../common/dto/pagination.dto';
 import { Env } from '../../config/env.validation';
 import { uniqueViolationFields } from '../../common/prisma/prisma-errors';
 import { CartIssue } from '../cart/dto/cart-response.dto';
+import { ProductCacheService } from '../products/product-cache.service';
 import { CancelOrderDto } from './dto/cancel-order.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderQueryDto } from './dto/order-query.dto';
@@ -66,6 +67,7 @@ export class OrdersService {
   constructor(
     private readonly orders: OrdersRepository,
     private readonly config: ConfigService<Env, true>,
+    private readonly productCache: ProductCacheService,
   ) {}
 
   /** Đặt đơn từ toàn bộ giỏ: trừ kho, lưu giá tại thời điểm đặt, xoá giỏ, tất cả trong một transaction. */
@@ -78,6 +80,8 @@ export class OrdersService {
         const order = await this.orders.withCheckout(userId, (checkout) =>
           this.checkout(checkout, userId, dto),
         );
+        // Sau commit: tồn kho đã trừ
+        await this.refreshStock(order);
         return OrderResponseDto.from(order);
       } catch (err) {
         // Lỗi trong transaction làm Postgres huỷ cả transaction nên phải chạy lại từ đầu
@@ -177,6 +181,7 @@ export class OrdersService {
         return locked.cancel(actor.id, notes.length ? notes.join(' · ') : null);
       },
     );
+    await this.refreshStock(order);
     return OrderResponseDto.from(order);
   }
 
@@ -273,19 +278,28 @@ export class OrdersService {
     const ids = await this.orders.findOverdueIds(placedBefore, EXPIRY_BATCH);
     let cancelled = 0;
     for (const id of ids) {
-      const done = await this.orders.withLockedOrder(
+      const order = await this.orders.withLockedOrder(
         id,
         undefined,
         async (locked) => {
           // Đơn quá hạn không thanh toán được nữa, nên chỉ có thể đã bị huỷ trong lúc chờ khoá
-          if (locked?.status !== OrderStatus.PENDING_PAYMENT) return false;
-          await locked.cancel(null, EXPIRY_NOTE);
-          return true;
+          if (locked?.status !== OrderStatus.PENDING_PAYMENT) return null;
+          return locked.cancel(null, EXPIRY_NOTE);
         },
       );
-      if (done) cancelled++;
+      if (order) {
+        await this.refreshStock(order);
+        cancelled++;
+      }
     }
     return cancelled;
+  }
+
+  /** Làm mới cache các sản phẩm vừa trừ / trả kho (gọi sau khi transaction đã ghi xong) */
+  private refreshStock(order: OrderWithItems): Promise<void> {
+    return this.productCache.invalidate(
+      order.items.map((item) => item.productId),
+    );
   }
 
   private paymentTimeoutMs(): number {

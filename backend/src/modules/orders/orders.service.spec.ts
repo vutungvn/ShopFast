@@ -7,6 +7,7 @@ import { ConfigService } from '@nestjs/config';
 import { OrderStatus, Prisma, Role } from '@prisma/client';
 import { Env } from '../../config/env.validation';
 import { CheckoutLine } from '../cart/cart.repository';
+import { ProductCacheService } from '../products/product-cache.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderQueryDto } from './dto/order-query.dto';
 import { StaffOrderQueryDto } from './dto/staff-order-query.dto';
@@ -65,6 +66,11 @@ function savedOrder(order: NewOrder): OrderWithItems {
   };
 }
 
+const fakeProductCache = () =>
+  ({
+    invalidate: jest.fn(async () => {}),
+  }) as unknown as jest.Mocked<ProductCacheService>;
+
 const TIMEOUT_MINUTES = 60;
 const config = {
   get: () => TIMEOUT_MINUTES,
@@ -87,11 +93,13 @@ function fakeCheckout(lines: CheckoutLine[], stock: Record<string, number>) {
   const repo = {
     withCheckout: jest.fn((_userId, work) => work(checkout)),
   } as unknown as jest.Mocked<OrdersRepository>;
+  const productCache = fakeProductCache();
   return {
     checkout,
     repo,
     inventory,
-    service: new OrdersService(repo, config),
+    productCache,
+    service: new OrdersService(repo, config, productCache),
   };
 }
 
@@ -148,6 +156,15 @@ describe('OrdersService.placeOrder', () => {
     expect(order.totalAmount).toBe(0.3);
   });
 
+  it('đặt thành công => làm mới cache tồn kho các sản phẩm đã trừ', async () => {
+    const { service, productCache } = fakeCheckout(
+      [line('a', 100, 1), line('b', 100, 2)],
+      { a: 10, b: 5 },
+    );
+    await service.placeOrder('u1', dto);
+    expect(productCache.invalidate).toHaveBeenCalledWith(['a', 'b']);
+  });
+
   it('giỏ trống => 409, không tạo đơn', async () => {
     const { service, checkout } = fakeCheckout([], {});
     const body = await conflictBody(service.placeOrder('u1', dto));
@@ -156,7 +173,7 @@ describe('OrdersService.placeOrder', () => {
   });
 
   it('có dòng lỗi => 409 liệt kê ĐỦ các dòng lỗi, không tạo đơn, không xoá giỏ', async () => {
-    const { service, checkout } = fakeCheckout(
+    const { service, checkout, productCache } = fakeCheckout(
       [
         line('a', 100, 1),
         line('b', 100, 1, false),
@@ -186,6 +203,8 @@ describe('OrdersService.placeOrder', () => {
     );
     expect(checkout.createOrder).not.toHaveBeenCalled();
     expect(checkout.clearCart).not.toHaveBeenCalled();
+    // Transaction hoàn lại, tồn kho không đổi
+    expect(productCache.invalidate).not.toHaveBeenCalled();
   });
 
   it('sản phẩm ngừng bán => không đụng tới tồn kho của nó', async () => {
@@ -251,7 +270,10 @@ describe('OrdersService.pay', () => {
     const repo = {
       markPaid: jest.fn().mockResolvedValue(result),
     } as unknown as jest.Mocked<OrdersRepository>;
-    return { repo, service: new OrdersService(repo, config) };
+    return {
+      repo,
+      service: new OrdersService(repo, config, fakeProductCache()),
+    };
   }
 
   const paidOrder = (): OrderWithItems => ({
@@ -334,10 +356,39 @@ function lockedSetup(status: OrderStatus | null, paidAt: Date | null = null) {
   const repo = {
     withLockedOrder: jest.fn((_id, _userId, work) => work(locked)),
   } as unknown as jest.Mocked<OrdersRepository>;
-  return { locked, repo, service: new OrdersService(repo, config) };
+  const productCache = fakeProductCache();
+  return {
+    locked,
+    repo,
+    productCache,
+    service: new OrdersService(repo, config, productCache),
+  };
 }
 
 describe('OrdersService.cancel – khách', () => {
+  it('huỷ xong => làm mới cache tồn kho các sản phẩm trong đơn', async () => {
+    const { service, locked, productCache } = lockedSetup(
+      OrderStatus.PENDING_PAYMENT,
+    );
+    const cancelled = await locked!.cancel(null, null);
+    const items = savedOrder({
+      ...dto,
+      code: cancelled.code,
+      userId: 'u1',
+      shippingFee: new Prisma.Decimal(0),
+      totalAmount: new Prisma.Decimal(300),
+      items: ['a', 'b'].map((productId) => ({
+        productId,
+        productName: productId,
+        unitPrice: new Prisma.Decimal(100),
+        quantity: 1,
+      })),
+    }).items;
+    locked!.cancel.mockResolvedValue({ ...cancelled, items });
+    await service.cancel(customerActor, 'o1', {});
+    expect(productCache.invalidate).toHaveBeenCalledWith(['a', 'b']);
+  });
+
   it('chỉ tìm trong đơn của chính khách', async () => {
     const { service, repo } = lockedSetup(OrderStatus.PENDING_PAYMENT);
     await service.cancel(customerActor, 'o1', {});
@@ -540,7 +591,10 @@ describe('OrdersService.listForStaff', () => {
     const repo = {
       listForStaff: jest.fn().mockResolvedValue([[], 0]),
     } as unknown as jest.Mocked<OrdersRepository>;
-    return { repo, service: new OrdersService(repo, config) };
+    return {
+      repo,
+      service: new OrdersService(repo, config, fakeProductCache()),
+    };
   }
   const query = (props: Partial<StaffOrderQueryDto>) =>
     Object.assign(new StaffOrderQueryDto(), props);
@@ -640,7 +694,10 @@ describe('OrdersService.getDetail', () => {
     const repo = {
       findDetail: jest.fn().mockResolvedValue(found),
     } as unknown as jest.Mocked<OrdersRepository>;
-    return { repo, service: new OrdersService(repo, config) };
+    return {
+      repo,
+      service: new OrdersService(repo, config, fakeProductCache()),
+    };
   }
 
   it('khách => chỉ tìm trong đơn của mình', async () => {
@@ -731,7 +788,7 @@ describe('OrdersService.listMine', () => {
     const repo = {
       listByUser: jest.fn().mockResolvedValue([[order], 21]),
     } as unknown as jest.Mocked<OrdersRepository>;
-    const service = new OrdersService(repo, config);
+    const service = new OrdersService(repo, config, fakeProductCache());
     const query = Object.assign(new OrderQueryDto(), {
       page: 2,
       limit: 20,
@@ -778,12 +835,19 @@ describe('OrdersService.expireOverdueOrders', () => {
           paidAt: null,
           cancel: jest.fn(async (by: string | null, note: string | null) => {
             cancels.push([id, by, note]);
+            return { items: [{ productId: `p-${id}` }] };
           }),
           changeStatus: jest.fn(),
         }),
       ),
     } as unknown as jest.Mocked<OrdersRepository>;
-    return { repo, cancels, service: new OrdersService(repo, config) };
+    const productCache = fakeProductCache();
+    return {
+      repo,
+      cancels,
+      productCache,
+      service: new OrdersService(repo, config, productCache),
+    };
   }
 
   it('huỷ các đơn quá hạn với người đổi = hệ thống (null), bỏ qua đơn vừa đổi trạng thái', async () => {
@@ -798,6 +862,15 @@ describe('OrdersService.expireOverdueOrders', () => {
       ['a', null, 'Tự huỷ do quá hạn thanh toán'],
       ['c', null, 'Tự huỷ do quá hạn thanh toán'],
     ]);
+  });
+
+  it('làm mới cache tồn kho của sản phẩm trong các đơn vừa huỷ', async () => {
+    const { service, productCache } = setup(['a', 'b'], {
+      a: OrderStatus.PENDING_PAYMENT,
+      b: OrderStatus.CANCELLED,
+    });
+    await service.expireOverdueOrders();
+    expect(productCache.invalidate.mock.calls).toEqual([[['p-a']]]);
   });
 
   it('chỉ lấy đơn đặt trước mốc hạn thanh toán, tối đa 100 đơn mỗi lượt', async () => {
@@ -824,7 +897,11 @@ describe('OrdersService.stats', () => {
         { status: OrderStatus.DELIVERED, count: 10 },
       ]),
     } as unknown as jest.Mocked<OrdersRepository>;
-    const { counts } = await new OrdersService(repo, config).stats();
+    const { counts } = await new OrdersService(
+      repo,
+      config,
+      fakeProductCache(),
+    ).stats();
     expect(counts).toEqual({
       PENDING_PAYMENT: 0,
       PAID: 3,

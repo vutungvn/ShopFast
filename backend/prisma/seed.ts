@@ -8,6 +8,7 @@
  */
 import { PrismaClient } from '@prisma/client';
 import { slugify } from '../src/common/utils/slug';
+import { clearCache } from '../src/infra/cache/clear-cache';
 import { seedAccountsAndOrders } from './seed-orders';
 
 const prisma = new PrismaClient();
@@ -210,6 +211,15 @@ async function main() {
       `khach01..${String(seeded.customers).padStart(2, '0')}@shopfast.vn. ` +
       `Thêm ${seeded.created} đơn hàng, bỏ qua ${seeded.skipped} đơn đã có.`,
   );
+
+  // 6. Seed ghi thẳng DB nên API không biết để làm mới cache: xoá hết cho chắc
+  try {
+    console.log(`Đã xoá ${await clearCache()} khoá cache.`);
+  } catch (err) {
+    console.warn(
+      `Không xoá được cache (${(err as Error).message}), hãy chạy npm run cache:clear`,
+    );
+  }
 }
 
 main()

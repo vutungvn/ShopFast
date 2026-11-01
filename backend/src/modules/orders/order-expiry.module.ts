@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { CartRepository } from '../cart/cart.repository';
+import { ProductCacheModule } from '../products/product-cache.module';
 import { OrderExpiryScheduler } from './order-expiry.scheduler';
 import { OrdersRepository } from './orders.repository';
 import { OrdersService } from './orders.service';
@@ -10,6 +11,7 @@ import { OrdersService } from './orders.service';
  * thì worker phải có JwtService cho guard dù không phục vụ HTTP.
  */
 @Module({
+  imports: [ProductCacheModule],
   providers: [
     OrderExpiryScheduler,
     OrdersService,

@@ -6,7 +6,8 @@ import {
 } from '@nestjs/common';
 import { paginate, PaginatedResult } from '../../common/dto/pagination.dto';
 import { uniqueViolationFields } from '../../common/prisma/prisma-errors';
-import { slugify } from '../../common/utils/slug';
+import { SLUG_PATTERN, slugify } from '../../common/utils/slug';
+import { Cached } from '../../infra/cache/cache.service';
 import { BrandsService } from '../brands/brands.service';
 import { CategoriesService } from '../categories/categories.service';
 import { CreateProductDto } from './dto/create-product.dto';
@@ -18,10 +19,14 @@ import { InventoryStatsDto } from './dto/inventory-stats.dto';
 import { ProductResponseDto } from './dto/product-response.dto';
 import { UpdateInventoryDto } from './dto/update-inventory.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { ProductCacheService } from './product-cache.service';
 import {
   ProductsRepository,
   ProductWithRelations,
 } from './products.repository';
+
+/** Giới hạn như khi tạo sản phẩm */
+const MAX_SLUG_LENGTH = 220;
 
 @Injectable()
 export class ProductsService {
@@ -29,13 +34,15 @@ export class ProductsService {
     private readonly products: ProductsRepository,
     private readonly categories: CategoriesService,
     private readonly brands: BrandsService,
+    private readonly cache: ProductCacheService,
   ) {}
 
-  /** Danh sách cho khách: chỉ sản phẩm đang bán. */
-  listPublic(
+  /** Danh sách cho khách: chỉ sản phẩm đang bán, qua cache. */
+  async listPublic(
     query: ProductQueryDto,
-  ): Promise<PaginatedResult<ProductResponseDto>> {
-    return this.search(query, true);
+  ): Promise<Cached<PaginatedResult<ProductResponseDto>>> {
+    this.assertPriceRange(query);
+    return this.cache.list(query, () => this.search(query, true));
   }
 
   /** Danh sách cho nhân viên: thấy cả sản phẩm đã ngừng bán. */
@@ -45,12 +52,18 @@ export class ProductsService {
     return this.search(query, query.isActive, query.lowStock);
   }
 
-  async getBySlug(slug: string): Promise<ProductResponseDto> {
-    const product = await this.products.findBySlug(slug);
-    if (!product?.isActive) {
-      throw new NotFoundException('Không tìm thấy sản phẩm');
+  /** Sản phẩm đang bán theo slug, qua cache; null = không có hoặc đã ngừng bán */
+  async findPublicBySlug(
+    slug: string,
+  ): Promise<Cached<ProductResponseDto | null>> {
+    // Slug sai định dạng chắc chắn không có: trả luôn, không tạo khoá cache rác
+    if (slug.length > MAX_SLUG_LENGTH || !SLUG_PATTERN.test(slug)) {
+      return { value: null, status: 'BYPASS' };
     }
-    return ProductResponseDto.from(product);
+    return this.cache.detail(slug, async () => {
+      const product = await this.products.findBySlug(slug);
+      return product?.isActive ? ProductResponseDto.from(product) : null;
+    });
   }
 
   async create(dto: CreateProductDto): Promise<ProductResponseDto> {
@@ -77,6 +90,8 @@ export class ProductsService {
         dto.stock,
       ),
     );
+    // Xoá cả kết quả "không có" đã cache của slug này
+    await this.cache.invalidate([product.id]);
     return ProductResponseDto.from(product);
   }
 
@@ -108,12 +123,13 @@ export class ProductsService {
         );
       }
     }
-    // Giai đoạn 3: làm mới cache sản phẩm tại đây khi tồn kho đổi
+    await this.cache.invalidate([id]);
     return ProductResponseDto.from((await this.products.findById(id))!);
   }
 
   async update(id: string, dto: UpdateProductDto): Promise<ProductResponseDto> {
-    if (!(await this.products.findById(id))) {
+    const current = await this.products.findById(id);
+    if (!current) {
       throw new NotFoundException('Không tìm thấy sản phẩm');
     }
     await this.assertReferences(dto.categoryId, dto.brandId);
@@ -130,6 +146,8 @@ export class ProductsService {
         brandId: dto.brandId,
       }),
     );
+    // Đổi slug: khoá chi tiết theo slug cũ cũng phải xoá
+    await this.cache.invalidate([id], [current.slug]);
     return ProductResponseDto.from(product);
   }
 
@@ -143,14 +161,7 @@ export class ProductsService {
     isActive: boolean | undefined,
     lowStock?: boolean,
   ): Promise<PaginatedResult<ProductResponseDto>> {
-    if (
-      query.minPrice !== undefined &&
-      query.maxPrice !== undefined &&
-      query.minPrice > query.maxPrice
-    ) {
-      throw new BadRequestException('minPrice không được lớn hơn maxPrice');
-    }
-
+    this.assertPriceRange(query);
     let categoryIds: string[] | undefined;
     if (query.category) {
       const ids = await this.categories.findIdsWithDescendants(query.category);
@@ -175,6 +186,16 @@ export class ProductsService {
       take: query.limit,
     });
     return paginate(products.map(ProductResponseDto.from), total, query);
+  }
+
+  private assertPriceRange(query: ProductQueryDto) {
+    if (
+      query.minPrice !== undefined &&
+      query.maxPrice !== undefined &&
+      query.minPrice > query.maxPrice
+    ) {
+      throw new BadRequestException('minPrice không được lớn hơn maxPrice');
+    }
   }
 
   private async assertReferences(categoryId?: string, brandId?: string) {
