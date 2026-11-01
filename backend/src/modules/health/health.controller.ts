@@ -1,4 +1,5 @@
 import { Controller, Get } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import {
   HealthCheck,
   HealthCheckService,
@@ -7,6 +8,8 @@ import {
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { RedisHealthIndicator } from '../../infra/redis/redis.health';
 
+// Docker healthcheck gọi liên tục, không tính vào hạn mức
+@SkipThrottle()
 @Controller('health')
 export class HealthController {
   constructor(

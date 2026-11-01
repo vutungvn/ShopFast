@@ -27,6 +27,23 @@ export const envSchema = z.object({
   // Worker quét đơn quá hạn thanh toán để tự huỷ sau mỗi khoảng này (giây)
   ORDER_EXPIRY_SWEEP_SECONDS: z.coerce.number().int().positive().default(60),
 
+  // Số lớp proxy đứng trước API (production: 1 lớp Nginx). Chỉ tin đúng số lớp này khi đọc
+  // X-Forwarded-For, để khách không tự gửi header giả IP. 0 = API nhận request trực tiếp
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).default(0),
+  // Hạn mức chung cho toàn bộ API trong mỗi cửa sổ THROTTLE_TTL_SECONDS
+  THROTTLE_TTL_SECONDS: z.coerce.number().int().positive().default(60),
+  THROTTLE_USER_LIMIT: z.coerce.number().int().positive().default(120),
+  // Chưa đăng nhập: nới hơn vì nhiều người có thể dùng chung một IP (NAT)
+  THROTTLE_IP_LIMIT: z.coerce.number().int().positive().default(300),
+  // Hạn mức riêng mỗi phút: đăng nhập theo IP, đặt đơn theo tài khoản (đặt nhỏ để thử trên giao diện)
+  THROTTLE_LOGIN_LIMIT: z.coerce.number().int().positive().default(20),
+  THROTTLE_ORDER_LIMIT: z.coerce.number().int().positive().default(5),
+  // Chỉ để test: tắt rate limit (các bộ e2e đăng nhập rất nhiều lần từ cùng một IP)
+  THROTTLE_DISABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+
   SWAGGER_ENABLED: z
     .enum(['true', 'false'])
     .default('true')

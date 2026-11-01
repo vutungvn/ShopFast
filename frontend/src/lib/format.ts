@@ -42,6 +42,12 @@ export function formatDateTime(value: string | Date) {
   return `${parts.hour}:${parts.minute}, ${parts.day}/${parts.month}/${parts.year}`
 }
 
+/** Đồng hồ đếm ngược: 42 => "0:42"; 905 => "15:05" */
+export function formatCountdown(seconds: number) {
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}:${String(seconds % 60).padStart(2, '0')}`
+}
+
 /** 86_100_000 => "23 giờ 55 phút"; dưới 1 phút => "dưới 1 phút" */
 export function formatDuration(ms: number) {
   const minutes = Math.floor(ms / 60_000)

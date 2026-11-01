@@ -12,6 +12,7 @@ import { ConfigService } from '@nestjs/config';
 import { ApiCookieAuth, ApiTags } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { MessageResponseDto } from '../../common/dto/message-response.dto';
+import { RateLimit } from '../../common/rate-limit/rate-limit.policies';
 import { Env } from '../../config/env.validation';
 import { UserResponseDto } from '../users/dto/user-response.dto';
 import { AuthService, ClientContext } from './auth.service';
@@ -43,12 +44,17 @@ export class AuthController {
 
   /** Đăng ký tài khoản khách hàng. Chỉ trả thông tin user, không cấp token. */
   @Post('register')
+  @RateLimit('register')
   register(@Body() dto: RegisterDto): Promise<UserResponseDto> {
     return this.auth.register(dto);
   }
 
-  /** Đăng nhập bằng email và mật khẩu */
+  /**
+   * Đăng nhập bằng email và mật khẩu. Sai 5 lần liên tiếp => tài khoản tạm khoá 1 phút,
+   * tiếp tục sai thì khoá lâu dần (5 phút, 15 phút); trong lúc khoá trả 429 kể cả khi đúng mật khẩu.
+   */
   @Post('login')
+  @RateLimit('login')
   @HttpCode(HttpStatus.OK)
   async login(
     @Body() dto: LoginDto,
@@ -61,6 +67,7 @@ export class AuthController {
 
   /** Dùng refresh token trong cookie để lấy access token mới (cookie được xoay vòng) */
   @Post('refresh')
+  @RateLimit('refresh')
   @HttpCode(HttpStatus.OK)
   @ApiCookieAuth(REFRESH_TOKEN_COOKIE)
   async refresh(

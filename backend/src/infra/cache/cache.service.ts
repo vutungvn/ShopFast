@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import Redis from 'ioredis';
 import { REDIS_CLIENT } from '../redis/redis.constants';
+import { withTimeout } from '../redis/with-timeout';
 import { CACHE_PREFIX, clearCacheKeys } from './cache-keys';
 import { CacheGroupStatsDto, CacheStatsDto } from './dto/cache-stats.dto';
 
@@ -224,11 +225,3 @@ function hitRate(hits: number, misses: number): number | null {
 }
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function withTimeout<R>(promise: Promise<R>, ms: number): Promise<R> {
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`Lệnh Redis quá ${ms}ms`)), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}

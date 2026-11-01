@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { RateLimitModule } from './common/rate-limit/rate-limit.module';
 import { CoreModule } from './core.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { BrandsModule } from './modules/brands/brands.module';
@@ -14,6 +15,7 @@ import { UsersModule } from './modules/users/users.module';
 @Module({
   imports: [
     CoreModule,
+    RateLimitModule,
     HealthModule,
     AuthModule,
     UsersModule,
