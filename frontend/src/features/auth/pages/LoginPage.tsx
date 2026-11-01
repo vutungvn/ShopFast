@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/Button'
 import { PasswordField } from '@/components/ui/PasswordField'
 import { TextField } from '@/components/ui/TextField'
 import { useForm } from '@/hooks/useForm'
+import { useRetryAfter } from '@/hooks/useRetryAfter'
+import { formatCountdown } from '@/lib/format'
 import { useAuth } from '../auth-context'
 import { AuthHeading } from '../components/AuthHeading'
 import type { LoginPageState } from '../types'
@@ -21,22 +23,32 @@ const NOTICES: Record<NonNullable<LoginPageState['notice']>, { variant: AlertVar
   },
 }
 
+const normalizeEmail = (email: string) => email.trim().toLowerCase()
+
 export function LoginPage() {
   const { login } = useAuth()
   const state = useLocation().state as LoginPageState | null
   const notice = state?.notice ? NOTICES[state.notice] : undefined
   const [serverError, setServerError] = useState<string | null>(null)
-  const { field, handleSubmit, submitting } = useForm<LoginValues>(
+  // Email vừa bị chặn (429). Khoá theo tài khoản nên chỉ khoá nút khi vẫn là email này
+  const [blockedEmail, setBlockedEmail] = useState<string | null>(null)
+  const retry = useRetryAfter()
+  const { values, field, handleSubmit, submitting } = useForm<LoginValues>(
     { email: state?.email ?? '', password: '' },
     validateLogin,
   )
+  const blocked = retry.secondsLeft > 0 && blockedEmail === normalizeEmail(values.email)
+  // Hết thời gian chờ thì ẩn câu báo 429 (trong câu có thời gian chờ lúc bị chặn)
+  const visibleError = blockedEmail && retry.secondsLeft === 0 ? null : serverError
 
   const onSubmit = handleSubmit(async ({ email, password }) => {
     setServerError(null)
+    setBlockedEmail(null)
     try {
       // Thành công: GuestOnly tự chuyển về trang định vào trước đó
       await login(email.trim(), password)
     } catch (error) {
+      if (retry.track(error)) setBlockedEmail(normalizeEmail(email))
       setServerError(getErrorMessage(error))
     }
   })
@@ -45,9 +57,14 @@ export function LoginPage() {
     <>
       <AuthHeading title="Đăng nhập" description="Chào mừng bạn quay lại ShopFast" />
 
-      {serverError ? (
-        <Alert variant="error" className="mt-6">
-          {serverError}
+      {visibleError ? (
+        <Alert variant={blockedEmail ? 'warning' : 'error'} className="mt-6">
+          {visibleError}
+          {blockedEmail && (
+            <span className="mt-1 block font-semibold tabular-nums">
+              Có thể thử lại sau {formatCountdown(retry.secondsLeft)}
+            </span>
+          )}
         </Alert>
       ) : (
         notice && (
@@ -77,10 +94,11 @@ export function LoginPage() {
         <Button
           type="submit"
           className="w-full"
+          disabled={blocked}
           loading={submitting}
           loadingText="Đang đăng nhập…"
         >
-          Đăng nhập
+          {blocked ? `Thử lại sau ${formatCountdown(retry.secondsLeft)}` : 'Đăng nhập'}
         </Button>
       </form>
 

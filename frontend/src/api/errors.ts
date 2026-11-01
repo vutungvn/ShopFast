@@ -15,3 +15,11 @@ export function getErrorMessage(error: unknown): string {
 export function getErrorStatus(error: unknown): number | undefined {
   return axios.isAxiosError(error) ? error.response?.status : undefined
 }
+
+/** Lỗi 429 (thao tác quá nhanh / tài khoản tạm khoá): số giây phải chờ; lỗi khác => undefined */
+export function getRetryAfter(error: unknown): number | undefined {
+  if (!axios.isAxiosError(error) || error.response?.status !== 429) return undefined
+  const fromBody: unknown = error.response.data?.retryAfter
+  const seconds = typeof fromBody === 'number' ? fromBody : Number(error.response.headers['retry-after'])
+  return Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds) : 60
+}

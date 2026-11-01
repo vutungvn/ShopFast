@@ -7,6 +7,7 @@ import {
   InjectThrottlerStorage,
   normalizeIp,
   ThrottlerGuard,
+  ThrottlerLimitDetail,
   ThrottlerModuleOptions,
   ThrottlerStorage,
 } from '@nestjs/throttler';
@@ -14,28 +15,14 @@ import { Request } from 'express';
 import { Env } from '../../config/env.validation';
 import { JwtPayload } from '../auth/auth-user';
 import { bearerToken } from '../auth/bearer-token';
-
-/** Ai đang gọi API: tài khoản (access token hợp lệ) hoặc IP */
-export interface RateLimitClient {
-  kind: 'user' | 'ip';
-  id: string;
-}
-
-type RateLimitedRequest = Request & { rateLimitClient?: RateLimitClient };
-
-/** Người gọi của request hiện tại (RateLimitGuard đã xác định trước khi tính hạn mức) */
-export function rateLimitClient(context: ExecutionContext): RateLimitClient {
-  const request = context.switchToHttp().getRequest<RateLimitedRequest>();
-  if (!request.rateLimitClient) {
-    throw new Error('RateLimitGuard chưa xác định người gọi');
-  }
-  return request.rateLimitClient;
-}
+import { RateLimitedRequest } from './rate-limit-client';
+import { rateLimitMessage } from './rate-limit.policies';
+import { TooManyRequestsException } from './too-many-requests.exception';
 
 /**
- * Rate limit toàn cục: đếm theo tài khoản khi đã đăng nhập, theo IP khi chưa.
+ * Rate limit toàn cục (hạn mức trong rate-limit.policies.ts).
  * Guard toàn cục chạy trước JwtAuthGuard của từng route nên tự kiểm tra token tại đây;
- * token giả hoặc hết hạn thì tính theo IP.
+ * token giả hoặc hết hạn thì coi như chưa đăng nhập.
  */
 @Injectable()
 export class RateLimitGuard extends ThrottlerGuard {
@@ -51,30 +38,42 @@ export class RateLimitGuard extends ThrottlerGuard {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     if (this.config.get('THROTTLE_DISABLED', { infer: true })) return true;
-    const request = context.switchToHttp().getRequest<RateLimitedRequest>();
+    const request = context
+      .switchToHttp()
+      .getRequest<Request & RateLimitedRequest>();
     // Phải có trước khi thư viện tính hạn mức (hạn mức phụ thuộc người gọi)
-    request.rateLimitClient = await this.identify(request);
+    request.rateLimitClient = {
+      userId: await this.userIdFromToken(request),
+      // req.ip đã tính tới TRUST_PROXY_HOPS; IPv6 gộp theo dải /64 vì một máy đổi được nhiều địa chỉ trong dải
+      ip: normalizeIp(request.ip ?? 'unknown'),
+    };
     return super.canActivate(context);
   }
 
-  protected async getTracker(request: RateLimitedRequest): Promise<string> {
-    const client = request.rateLimitClient!;
-    return `${client.kind}:${client.id}`;
+  /** 429 tiếng Việt theo từng loại hạn mức thay cho câu tiếng Anh mặc định */
+  protected async throwThrottlingException(
+    _context: ExecutionContext,
+    detail: ThrottlerLimitDetail,
+  ): Promise<void> {
+    // Khoá có dạng "<tên hạn mức>:<người gọi>" (generateKey trong rate-limit.policies.ts)
+    const name = detail.key.slice(0, detail.key.indexOf(':'));
+    throw new TooManyRequestsException(
+      rateLimitMessage(name),
+      detail.timeToBlockExpire,
+    );
   }
 
-  private async identify(request: Request): Promise<RateLimitClient> {
+  private async userIdFromToken(request: Request): Promise<string | undefined> {
     const token = bearerToken(request);
-    if (token) {
-      try {
-        const payload = await this.jwt.verifyAsync<JwtPayload>(token, {
-          algorithms: ['HS256'],
-        });
-        return { kind: 'user', id: payload.sub };
-      } catch {
-        // Token không hợp lệ: đếm theo IP, route cần đăng nhập sẽ tự trả 401
-      }
+    if (!token) return undefined;
+    try {
+      const payload = await this.jwt.verifyAsync<JwtPayload>(token, {
+        algorithms: ['HS256'],
+      });
+      return payload.sub;
+    } catch {
+      // Token không hợp lệ: đếm theo IP, route cần đăng nhập sẽ tự trả 401
+      return undefined;
     }
-    // req.ip đã tính tới TRUST_PROXY_HOPS; IPv6 gộp theo dải /64 vì một máy có thể đổi nhiều địa chỉ trong dải
-    return { kind: 'ip', id: normalizeIp(request.ip ?? 'unknown') };
   }
 }

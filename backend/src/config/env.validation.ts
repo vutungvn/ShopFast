@@ -35,6 +35,9 @@ export const envSchema = z.object({
   THROTTLE_USER_LIMIT: z.coerce.number().int().positive().default(120),
   // Chưa đăng nhập: nới hơn vì nhiều người có thể dùng chung một IP (NAT)
   THROTTLE_IP_LIMIT: z.coerce.number().int().positive().default(300),
+  // Hạn mức riêng mỗi phút: đăng nhập theo IP, đặt đơn theo tài khoản (đặt nhỏ để thử trên giao diện)
+  THROTTLE_LOGIN_LIMIT: z.coerce.number().int().positive().default(20),
+  THROTTLE_ORDER_LIMIT: z.coerce.number().int().positive().default(5),
   // Chỉ để test: tắt rate limit (các bộ e2e đăng nhập rất nhiều lần từ cùng một IP)
   THROTTLE_DISABLED: z
     .enum(['true', 'false'])

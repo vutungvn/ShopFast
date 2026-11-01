@@ -2,7 +2,9 @@ import { ConflictException, UnauthorizedException } from '@nestjs/common';
 import { Prisma, RefreshToken, Role, User } from '@prisma/client';
 import { RefreshTokenRepository } from '../sessions/refresh-token.repository';
 import { UsersRepository } from '../users/users.repository';
+import { TooManyRequestsException } from '../../common/rate-limit/too-many-requests.exception';
 import { AuthService } from './auth.service';
+import { LoginAttemptsService } from './login-attempts.service';
 import { PasswordService } from './password.service';
 import { TokenService } from './token.service';
 
@@ -42,6 +44,9 @@ describe('AuthService', () => {
     >
   >;
   let passwords: jest.Mocked<Pick<PasswordService, 'hash' | 'verify'>>;
+  let attempts: jest.Mocked<
+    Pick<LoginAttemptsService, 'assertNotLocked' | 'recordFailure' | 'reset'>
+  >;
 
   beforeEach(() => {
     users = {
@@ -56,6 +61,11 @@ describe('AuthService', () => {
       revokeFamily: jest.fn(),
     };
     passwords = { hash: jest.fn(), verify: jest.fn() };
+    attempts = {
+      assertNotLocked: jest.fn(),
+      recordFailure: jest.fn().mockResolvedValue(4),
+      reset: jest.fn(),
+    };
     const tokens: Partial<TokenService> = {
       accessTokenTtlSeconds: 900,
       signAccessToken: jest.fn().mockResolvedValue('access'),
@@ -68,6 +78,7 @@ describe('AuthService', () => {
       refreshTokens as unknown as RefreshTokenRepository,
       passwords as unknown as PasswordService,
       tokens as TokenService,
+      attempts as unknown as LoginAttemptsService,
     );
   });
 
@@ -144,6 +155,40 @@ describe('AuthService', () => {
       );
       // Vẫn chạy verify khi email không tồn tại (chống dò email qua thời gian phản hồi)
       expect(passwords.verify).toHaveBeenLastCalledWith(undefined, 'x');
+      // Email chưa đăng ký cũng bị đếm sai như tài khoản thật
+      expect(attempts.recordFailure).toHaveBeenLastCalledWith(
+        'khong-co@shopfast.vn',
+      );
+    });
+
+    it('đăng nhập đúng => quên các lần sai trước đó', async () => {
+      users.findByEmail.mockResolvedValue(user);
+      passwords.verify.mockResolvedValue(true);
+      await service.login({ email: user.email, password: 'x' }, {});
+      expect(attempts.reset).toHaveBeenCalledWith(user.email);
+      expect(attempts.recordFailure).not.toHaveBeenCalled();
+    });
+
+    it('còn ≤ 2 lần thử => báo trước sắp bị khoá', async () => {
+      users.findByEmail.mockResolvedValue(user);
+      passwords.verify.mockResolvedValue(false);
+      attempts.recordFailure.mockResolvedValue(2);
+      await expect(
+        service.login({ email: user.email, password: 'x' }, {}),
+      ).rejects.toThrow(
+        'Email hoặc mật khẩu không đúng. Còn 2 lần thử trước khi tài khoản bị tạm khoá',
+      );
+    });
+
+    it('đang bị khoá => 429, không kiểm tra mật khẩu (kể cả mật khẩu đúng)', async () => {
+      attempts.assertNotLocked.mockRejectedValue(
+        new TooManyRequestsException('Tài khoản tạm khoá', 60),
+      );
+      await expect(
+        service.login({ email: user.email, password: 'dung' }, {}),
+      ).rejects.toThrow(TooManyRequestsException);
+      expect(users.findByEmail).not.toHaveBeenCalled();
+      expect(passwords.verify).not.toHaveBeenCalled();
     });
   });
 

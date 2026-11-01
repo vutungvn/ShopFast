@@ -20,6 +20,7 @@ import { Roles } from '../../common/auth/roles.decorator';
 import { RolesGuard } from '../../common/auth/roles.guard';
 import { CancelOrderDto } from './dto/cancel-order.dto';
 import { PaginatedResult } from '../../common/dto/pagination.dto';
+import { RateLimit } from '../../common/rate-limit/rate-limit.policies';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderQueryDto } from './dto/order-query.dto';
 import { StaffOrderQueryDto } from './dto/staff-order-query.dto';
@@ -44,6 +45,7 @@ export class OrdersController {
    * => 409, body có `items` liệt kê các dòng lỗi; khi đó tồn kho và giỏ giữ nguyên.
    */
   @Post()
+  @RateLimit('order')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.CUSTOMER)
   create(

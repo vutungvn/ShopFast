@@ -12,6 +12,7 @@ import { UsersRepository } from '../users/users.repository';
 import { IssuedTokens } from './dto/auth-response.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { LoginAttemptsService } from './login-attempts.service';
 import { PasswordService } from './password.service';
 import { TokenService } from './token.service';
 
@@ -23,6 +24,8 @@ export interface ClientContext {
 export type AuthResult = IssuedTokens & { user: UserResponseDto };
 
 const INVALID_REFRESH = 'Phiên đăng nhập không hợp lệ hoặc đã hết hạn';
+/** Còn ít lượt thế này thì báo trước cho người dùng biết sắp bị khoá */
+const WARN_REMAINING_ATTEMPTS = 2;
 
 @Injectable()
 export class AuthService {
@@ -33,6 +36,7 @@ export class AuthService {
     private readonly refreshTokens: RefreshTokenRepository,
     private readonly passwords: PasswordService,
     private readonly tokens: TokenService,
+    private readonly attempts: LoginAttemptsService,
   ) {}
 
   /**
@@ -68,12 +72,21 @@ export class AuthService {
   }
 
   async login(dto: LoginDto, ctx: ClientContext): Promise<AuthResult> {
+    // Đang khoá vì sai nhiều lần: từ chối luôn, kể cả khi mật khẩu đúng
+    await this.attempts.assertNotLocked(dto.email);
     const user = await this.users.findByEmail(dto.email);
     // Luôn chạy verify (kể cả khi không có user) và trả cùng một thông báo
     const valid = await this.passwords.verify(user?.passwordHash, dto.password);
     if (!user || !valid) {
-      throw new UnauthorizedException('Email hoặc mật khẩu không đúng');
+      // Email chưa đăng ký cũng bị đếm và khoá y như vậy: không lộ email nào có tài khoản
+      const remaining = await this.attempts.recordFailure(dto.email);
+      throw new UnauthorizedException(
+        remaining <= WARN_REMAINING_ATTEMPTS
+          ? `Email hoặc mật khẩu không đúng. Còn ${remaining} lần thử trước khi tài khoản bị tạm khoá`
+          : 'Email hoặc mật khẩu không đúng',
+      );
     }
+    await this.attempts.reset(dto.email);
     return this.buildAuthResponse(user, randomUUID(), ctx);
   }
 

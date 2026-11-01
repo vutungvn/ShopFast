@@ -18,8 +18,9 @@ import type { Cart, CartItem } from '@/features/cart/types'
 import { ProductImage } from '@/features/catalog/components/ProductImage'
 import { PERKS } from '@/features/catalog/perks'
 import { useForm } from '@/hooks/useForm'
+import { useRetryAfter } from '@/hooks/useRetryAfter'
 import { cn } from '@/lib/cn'
-import { formatPrice } from '@/lib/format'
+import { formatCountdown, formatPrice } from '@/lib/format'
 import { CheckoutSteps } from '../components/CheckoutSteps'
 import { OrderTotals } from '../components/OrderTotals'
 import { usePlaceOrder } from '../queries'
@@ -87,6 +88,12 @@ function CheckoutForm({ user, cart }: { user: User; cart: Cart }) {
   const placeOrder = usePlaceOrder()
   const [problems, setProblems] = useState<CheckoutProblem[] | null>(null)
   const [serverError, setServerError] = useState<string | null>(null)
+  const [rateLimited, setRateLimited] = useState(false)
+  const retry = useRetryAfter()
+  const blocked = retry.secondsLeft > 0
+  // Hết thời gian chờ thì ẩn câu báo 429 (trong câu có thời gian chờ lúc bị chặn)
+  const visibleError = rateLimited && !blocked ? null : serverError
+  const submitLabel = blocked ? `Thử lại sau ${formatCountdown(retry.secondsLeft)}` : 'Đặt hàng'
   const { field, handleSubmit, submitting } = useForm<ShippingInfo>(
     { recipientName: user.fullName, recipientPhone: user.phone ?? '', shippingAddress: '' },
     validateShipping,
@@ -95,6 +102,7 @@ function CheckoutForm({ user, cart }: { user: User; cart: Cart }) {
   const onSubmit = handleSubmit(async (values) => {
     setProblems(null)
     setServerError(null)
+    setRateLimited(false)
     try {
       const order = await placeOrder.mutateAsync({
         recipientName: values.recipientName.trim(),
@@ -104,6 +112,7 @@ function CheckoutForm({ user, cart }: { user: User; cart: Cart }) {
       // replace: bấm Back từ trang thanh toán không quay lại form đặt đơn của giỏ đã đặt
       navigate(orderPaymentPath(order.id), { replace: true })
     } catch (error) {
+      setRateLimited(retry.track(error))
       const items = checkoutProblems(error)
       if (items) setProblems(items)
       else setServerError(getErrorMessage(error))
@@ -136,7 +145,7 @@ function CheckoutForm({ user, cart }: { user: User; cart: Cart }) {
             </div>
           </div>
         )}
-        {serverError && <Alert variant="error">{serverError}</Alert>}
+        {visibleError && <Alert variant={rateLimited ? 'warning' : 'error'}>{visibleError}</Alert>}
 
         <form
           id={FORM_ID}
@@ -270,10 +279,11 @@ function CheckoutForm({ user, cart }: { user: User; cart: Cart }) {
             form={FORM_ID}
             size="lg"
             className="mt-6 hidden w-full lg:flex"
+            disabled={blocked}
             loading={submitting}
             loadingText="Đang đặt hàng..."
           >
-            Đặt hàng
+            {submitLabel}
             <ArrowRight className="size-5" aria-hidden />
           </Button>
           <p className="mt-3 text-center text-xs leading-relaxed text-slate-500">
@@ -296,8 +306,15 @@ function CheckoutForm({ user, cart }: { user: User; cart: Cart }) {
           <p className="text-xs text-slate-500">Tổng cộng</p>
           <p className="truncate text-lg font-bold text-brand-600">{formatPrice(cart.subtotal)}</p>
         </div>
-        <Button type="submit" form={FORM_ID} className="ml-auto" loading={submitting} loadingText="Đang đặt...">
-          Đặt hàng
+        <Button
+          type="submit"
+          form={FORM_ID}
+          className="ml-auto"
+          disabled={blocked}
+          loading={submitting}
+          loadingText="Đang đặt..."
+        >
+          {submitLabel}
         </Button>
       </div>
       <div className="h-16 lg:hidden" aria-hidden />
