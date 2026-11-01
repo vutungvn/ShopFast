@@ -7,6 +7,7 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
 import { AuthUser, JwtPayload } from './auth-user';
+import { bearerToken } from './bearer-token';
 
 /**
  * Bảo vệ endpoint cần đăng nhập: `@UseGuards(JwtAuthGuard)`.
@@ -18,7 +19,7 @@ export class JwtAuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
-    const token = this.extractBearerToken(request);
+    const token = bearerToken(request);
     if (!token) throw new UnauthorizedException('Bạn cần đăng nhập');
 
     try {
@@ -37,10 +38,5 @@ export class JwtAuthGuard implements CanActivate {
         'Phiên đăng nhập không hợp lệ hoặc đã hết hạn',
       );
     }
-  }
-
-  private extractBearerToken(request: Request): string | undefined {
-    const [type, token] = request.headers.authorization?.split(' ') ?? [];
-    return type === 'Bearer' && token ? token : undefined;
   }
 }
