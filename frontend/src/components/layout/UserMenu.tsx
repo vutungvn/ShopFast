@@ -1,4 +1,4 @@
-import { ChevronDown, LogOut, ReceiptText, UserRound } from 'lucide-react'
+import { ChevronDown, LogOut, MessageCircleQuestion, ReceiptText, UserRound } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation } from 'react-router'
 import { PATHS } from '@/app/paths'
@@ -89,6 +89,17 @@ export function UserMenu() {
             <ReceiptText className="size-4 text-slate-400" aria-hidden />
             {user.role === 'CUSTOMER' ? 'Đơn mua' : 'Quản lý đơn hàng'}
           </Link>
+          {user.role !== 'WAREHOUSE' && (
+            <Link
+              to={user.role === 'CUSTOMER' ? PATHS.support : PATHS.staffTickets}
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              className="flex items-center gap-2.5 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50"
+            >
+              <MessageCircleQuestion className="size-4 text-slate-400" aria-hidden />
+              {user.role === 'CUSTOMER' ? 'Hỗ trợ' : 'Hỗ trợ khách hàng'}
+            </Link>
+          )}
           <Link
             to={PATHS.account}
             role="menuitem"

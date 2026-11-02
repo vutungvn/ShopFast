@@ -18,6 +18,11 @@ import { OrderDetailPage } from '@/features/orders/pages/OrderDetailPage'
 import { OrdersPage } from '@/features/orders/pages/OrdersPage'
 import { PaymentPage } from '@/features/orders/pages/PaymentPage'
 import { InventoryPage } from '@/features/staff/pages/InventoryPage'
+import { AgentActionsPage } from '@/features/support/pages/AgentActionsPage'
+import { StaffTicketPage } from '@/features/support/pages/StaffTicketPage'
+import { StaffTicketsPage } from '@/features/support/pages/StaffTicketsPage'
+import { SupportPage } from '@/features/support/pages/SupportPage'
+import { TicketPage } from '@/features/support/pages/TicketPage'
 import { StaffOrderDetailPage } from '@/features/staff/pages/StaffOrderDetailPage'
 import { StaffOrdersPage } from '@/features/staff/pages/StaffOrdersPage'
 import { PATHS } from './paths'
@@ -64,6 +69,8 @@ export const router = createBrowserRouter([
                   { path: PATHS.orders, element: <OrdersPage /> },
                   { path: PATHS.order, element: <OrderDetailPage /> },
                   { path: PATHS.orderPayment, element: <PaymentPage /> },
+                  { path: PATHS.support, element: <SupportPage /> },
+                  { path: PATHS.supportTicket, element: <TicketPage /> },
                 ],
               },
             ],
@@ -71,7 +78,7 @@ export const router = createBrowserRouter([
         ],
       },
       {
-        // Khu nhân viên: CSKH chỉ xem đơn; kho và admin xử lý đơn, quản lý tồn kho
+        // Khu nhân viên: CSKH xem đơn, hỗ trợ khách; kho và admin xử lý đơn, quản lý tồn kho
         element: <RequireAuth />,
         children: [
           {
@@ -85,6 +92,15 @@ export const router = createBrowserRouter([
                   {
                     element: <RequireRole roles={['WAREHOUSE', 'ADMIN']} />,
                     children: [{ path: PATHS.staffInventory, element: <InventoryPage /> }],
+                  },
+                  {
+                    // Hỗ trợ khách + duyệt đề xuất của trợ lý AI: CSKH và admin
+                    element: <RequireRole roles={['SUPPORT', 'ADMIN']} />,
+                    children: [
+                      { path: PATHS.staffTickets, element: <StaffTicketsPage /> },
+                      { path: PATHS.staffTicket, element: <StaffTicketPage /> },
+                      { path: PATHS.staffAgentActions, element: <AgentActionsPage /> },
+                    ],
                   },
                 ],
               },

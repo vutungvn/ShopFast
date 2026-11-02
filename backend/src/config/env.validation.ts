@@ -44,6 +44,10 @@ export const envSchema = z.object({
     .default('false')
     .transform((value) => value === 'true'),
 
+  // Trợ lý AI CSKH (Gemini). Không có khoá thì trợ lý không trả lời, nhân viên xử lý ticket
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().min(1).default('gemini-3.5-flash-lite'),
+
   SWAGGER_ENABLED: z
     .enum(['true', 'false'])
     .default('true')

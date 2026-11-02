@@ -13,7 +13,13 @@ import { RateLimitClient, rateLimitClientOf } from './rate-limit-client';
 
 /** Endpoint nhạy cảm có hạn mức riêng, chặt hơn hạn mức chung */
 export type RateLimitPurpose =
-  'login' | 'register' | 'refresh' | 'order' | 'otp';
+  | 'login'
+  | 'register'
+  | 'refresh'
+  | 'order'
+  | 'otp'
+  | 'ticket'
+  | 'ticket-message';
 
 const PURPOSE_KEY = 'rateLimitPurpose';
 
@@ -39,6 +45,8 @@ const MESSAGES: Record<string, string> = {
   order: 'Bạn đặt đơn quá nhanh',
   'otp-email': 'Bạn đã yêu cầu gửi mã quá nhiều lần',
   'otp-ip': 'Bạn đã yêu cầu gửi mã quá nhiều lần',
+  ticket: 'Bạn đã tạo quá nhiều yêu cầu hỗ trợ',
+  'ticket-message': 'Bạn gửi tin nhắn quá nhanh',
 };
 
 export const rateLimitMessage = (throttlerName: string) =>
@@ -126,6 +134,19 @@ export function throttlerOptions(
         name: 'order',
         ttl: MINUTE,
         limit: config.get('THROTTLE_ORDER_LIMIT', { infer: true }),
+        getTracker: byUserOrIp,
+      }),
+      // Mỗi tin nhắn gọi AI (gói miễn phí có hạn mức theo ngày): chặn spam làm hết lượt của cả hệ thống
+      forPurpose('ticket', {
+        name: 'ticket',
+        ttl: 15 * MINUTE,
+        limit: 5,
+        getTracker: byUserOrIp,
+      }),
+      forPurpose('ticket-message', {
+        name: 'ticket-message',
+        ttl: MINUTE,
+        limit: 10,
         getTracker: byUserOrIp,
       }),
       forPurpose('otp', {
