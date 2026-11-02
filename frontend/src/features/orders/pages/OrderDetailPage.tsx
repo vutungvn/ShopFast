@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/Button'
 import { buttonClasses } from '@/components/ui/button-styles'
 import { CopyButton } from '@/components/ui/CopyButton'
 import { Toast } from '@/components/ui/Toast'
+import { openChatWidget } from '@/features/support/chat-widget'
+import { useOpenTicket } from '@/features/support/queries'
 import { formatDateTime } from '@/lib/format'
 import { CancelOrderDialog } from '../components/CancelOrderDialog'
 import { LiveBadge } from '../components/LiveBadge'
@@ -34,6 +36,7 @@ export function OrderDetailPage() {
     if (event.actor !== 'CUSTOMER') setNotice({ id: ++noticeSeq, event })
   })
   const order = query.data
+  const openTicket = useOpenTicket(id).data
 
   if (!order) {
     return (
@@ -118,9 +121,14 @@ export function OrderDetailPage() {
             <p className="mt-1 text-sm text-slate-500">
               Hỏi trợ lý AI về trạng thái đơn hoặc gửi yêu cầu cho bộ phận chăm sóc khách hàng.
             </p>
-            <Button variant="outline" className="mt-4 w-full" disabled title="Trợ lý AI sắp ra mắt">
+            {/* Mở cửa sổ chat gắn đơn này; đơn đã có cuộc trò chuyện đang mở thì nói tiếp */}
+            <Button
+              variant="outline"
+              className="mt-4 w-full"
+              onClick={() => openChatWidget({ order: { orderId: order.id, code: order.code } })}
+            >
               <Bot className="size-4.5" aria-hidden />
-              Chat với trợ lý AI (sắp ra mắt)
+              {openTicket ? 'Tiếp tục trò chuyện với trợ lý AI' : 'Chat với trợ lý AI'}
             </Button>
           </section>
 

@@ -1,6 +1,7 @@
 import { ShoppingCart } from "lucide-react";
 import {
   Link,
+  matchPath,
   NavLink,
   Outlet,
   useLocation,
@@ -10,6 +11,7 @@ import { PATHS } from "@/app/paths";
 import { Logo } from "@/components/brand/Logo";
 import { useAuth } from "@/features/auth/auth-context";
 import { useCart } from "@/features/cart/queries";
+import { SupportChatWidget } from "@/features/support/components/SupportChatWidget";
 import { cn } from "@/lib/cn";
 import { HeaderSearch } from "./HeaderSearch";
 import { UserMenu } from "./UserMenu";
@@ -30,6 +32,9 @@ export function ShopLayout() {
   const { user } = useAuth();
   const showCart = !user || user.role === "CUSTOMER";
   const itemCount = useCart().data?.itemCount ?? 0;
+  // Cửa sổ chat với trợ lý AI cho khách đã đăng nhập; ẩn ở trang một cuộc trò chuyện (đã có khung chat)
+  const showChat =
+    user?.role === "CUSTOMER" && !matchPath(PATHS.supportTicket, pathname);
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -52,9 +57,14 @@ export function ShopLayout() {
             </NavLink>
             {/* Khách (người chưa đăng nhập bấm vào sẽ sang đăng nhập) xem đơn mua; nhân viên sang khu quản lý */}
             {showCart ? (
-              <NavLink to={PATHS.orders} className={navClass}>
-                Đơn mua
-              </NavLink>
+              <>
+                <NavLink to={PATHS.orders} className={navClass}>
+                  Đơn mua
+                </NavLink>
+                <NavLink to={PATHS.support} className={navClass}>
+                  Hỗ trợ
+                </NavLink>
+              </>
             ) : (
               <NavLink to={PATHS.staffOrders} className={navClass}>
                 Trang nhân viên
@@ -120,6 +130,8 @@ export function ShopLayout() {
           © 2026 ShopFast - Thanh Tùng
         </div>
       </footer>
+
+      {showChat && <SupportChatWidget />}
     </div>
   );
 }

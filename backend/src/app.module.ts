@@ -9,6 +9,7 @@ import { CategoriesModule } from './modules/categories/categories.module';
 import { HealthModule } from './modules/health/health.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { ProductsModule } from './modules/products/products.module';
+import { SupportModule } from './modules/support/support.module';
 import { UsersModule } from './modules/users/users.module';
 
 /** Tiến trình API: HTTP + WebSocket. */
@@ -24,6 +25,7 @@ import { UsersModule } from './modules/users/users.module';
     ProductsModule,
     CartModule,
     OrdersModule,
+    SupportModule,
     CacheAdminModule,
   ],
 })

@@ -16,5 +16,7 @@ import { OrdersService } from './orders.service';
     OrdersGateway,
     { provide: ORDER_EVENTS, useExisting: OrdersGateway },
   ],
+  // Hỗ trợ khách: nhân viên duyệt đề xuất huỷ đơn của trợ lý AI
+  exports: [OrdersService],
 })
 export class OrdersModule {}

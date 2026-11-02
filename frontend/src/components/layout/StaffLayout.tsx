@@ -3,6 +3,7 @@ import { Link, NavLink, Outlet } from 'react-router'
 import { PATHS } from '@/app/paths'
 import { Logo } from '@/components/brand/Logo'
 import { useAuth } from '@/features/auth/auth-context'
+import { usePendingActionCount } from '@/features/support/queries'
 import { cn } from '@/lib/cn'
 import { UserMenu } from './UserMenu'
 
@@ -18,6 +19,8 @@ const navClass = ({ isActive }: { isActive: boolean }) =>
 export function StaffLayout() {
   const { user } = useAuth()
   const managesStock = user?.role === 'WAREHOUSE' || user?.role === 'ADMIN'
+  const supportsCustomers = user?.role === 'SUPPORT' || user?.role === 'ADMIN'
+  const pending = usePendingActionCount(supportsCustomers).data ?? 0
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -30,7 +33,7 @@ export function StaffLayout() {
             </span>
           </Link>
 
-          <nav className="flex items-center gap-5 sm:gap-6" aria-label="Điều hướng nhân viên">
+          <nav className="flex items-center gap-5 overflow-x-auto sm:gap-6" aria-label="Điều hướng nhân viên">
             <NavLink to={PATHS.staffOrders} className={navClass}>
               Quản lý đơn
             </NavLink>
@@ -38,6 +41,21 @@ export function StaffLayout() {
               <NavLink to={PATHS.staffInventory} className={navClass}>
                 Tồn kho
               </NavLink>
+            )}
+            {supportsCustomers && (
+              <>
+                <NavLink to={PATHS.staffTickets} className={navClass}>
+                  Hỗ trợ khách
+                </NavLink>
+                <NavLink to={PATHS.staffAgentActions} className={navClass}>
+                  Duyệt đề xuất AI
+                  {pending > 0 && (
+                    <span className="ml-1.5 rounded-full bg-amber-500 px-1.5 py-px text-xs font-semibold text-white">
+                      {pending}
+                    </span>
+                  )}
+                </NavLink>
+              </>
             )}
           </nav>
 
