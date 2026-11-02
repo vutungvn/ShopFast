@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -24,8 +25,10 @@ import {
   OrderStatsDto,
   OrderSummaryDto,
   StaffOrderSummaryDto,
+  TimelineActor,
 } from './dto/order-response.dto';
 import { generateOrderCode } from './order-code';
+import { ORDER_EVENTS, OrderEventsPublisher } from './order-events';
 import {
   CUSTOMER_CANCELLABLE,
   customerActions,
@@ -37,6 +40,7 @@ import {
   Checkout,
   OrderWithItems,
   OrdersRepository,
+  PAYMENT_NOTE,
   PayResult,
 } from './orders.repository';
 
@@ -68,6 +72,7 @@ export class OrdersService {
     private readonly orders: OrdersRepository,
     private readonly config: ConfigService<Env, true>,
     private readonly productCache: ProductCacheService,
+    @Inject(ORDER_EVENTS) private readonly events: OrderEventsPublisher,
   ) {}
 
   /** Đặt đơn từ toàn bộ giỏ: trừ kho, lưu giá tại thời điểm đặt, xoá giỏ, tất cả trong một transaction. */
@@ -82,6 +87,7 @@ export class OrdersService {
         );
         // Sau commit: tồn kho đã trừ
         await this.refreshStock(order);
+        this.publish(order, null, 'CUSTOMER', null);
         return OrderResponseDto.from(order);
       } catch (err) {
         // Lỗi trong transaction làm Postgres huỷ cả transaction nên phải chạy lại từ đầu
@@ -97,8 +103,14 @@ export class OrdersService {
     // Kiểm tra hạn ngay tại đây: job tự huỷ chạy trễ thì đơn quá hạn vẫn không thanh toán được
     const placedAfter = new Date(Date.now() - this.paymentTimeoutMs());
     const result = await this.orders.markPaid(orderId, userId, placedAfter);
-    if (result.paid) return OrderResponseDto.from(result.order);
-    throw paymentError(result.current);
+    if (!result.paid) throw paymentError(result.current);
+    this.publish(
+      result.order,
+      OrderStatus.PENDING_PAYMENT,
+      'CUSTOMER',
+      PAYMENT_NOTE,
+    );
+    return OrderResponseDto.from(result.order);
   }
 
   /** Đơn của khách đang đăng nhập, mới nhất trước, lọc theo trạng thái */
@@ -157,6 +169,8 @@ export class OrdersService {
         `Nhân viên huỷ đơn phải ghi lý do (ít nhất ${MIN_STAFF_CANCEL_REASON} ký tự)`,
       );
     }
+    let previousStatus: OrderStatus | null = null;
+    let note: string | null = null;
     const order = await this.orders.withLockedOrder(
       orderId,
       isCustomer ? actor.id : undefined,
@@ -178,10 +192,18 @@ export class OrdersService {
           // Đã thanh toán (kể cả đã sang bước xử lý sau): hoàn tiền chỉ là ghi chú, chưa có cổng thật
           locked.paidAt ? 'Hoàn tiền (giả lập)' : null,
         ].filter(Boolean);
-        return locked.cancel(actor.id, notes.length ? notes.join(' · ') : null);
+        previousStatus = locked.status;
+        note = notes.length ? notes.join(' · ') : null;
+        return locked.cancel(actor.id, note);
       },
     );
     await this.refreshStock(order);
+    this.publish(
+      order,
+      previousStatus,
+      isCustomer ? 'CUSTOMER' : 'STAFF',
+      note,
+    );
     return OrderResponseDto.from(order);
   }
 
@@ -244,6 +266,7 @@ export class OrdersService {
     orderId: string,
     dto: UpdateOrderStatusDto,
   ): Promise<OrderDetailDto> {
+    let previousStatus: OrderStatus | null = null;
     const order = await this.orders.withLockedOrder(
       orderId,
       undefined,
@@ -258,9 +281,11 @@ export class OrdersService {
             currentStatus: locked.status,
           });
         }
+        previousStatus = locked.status;
         return locked.changeStatus(dto.status, staff.id, dto.note || null);
       },
     );
+    this.publish(order, previousStatus, 'STAFF', dto.note || null);
     return OrderDetailDto.fromDetail(
       order,
       customerActions(order, this.paymentTimeoutMs()),
@@ -289,6 +314,7 @@ export class OrdersService {
       );
       if (order) {
         await this.refreshStock(order);
+        this.publish(order, OrderStatus.PENDING_PAYMENT, 'SYSTEM', EXPIRY_NOTE);
         cancelled++;
       }
     }
@@ -300,6 +326,24 @@ export class OrdersService {
     return this.productCache.invalidate(
       order.items.map((item) => item.productId),
     );
+  }
+
+  /** Báo realtime cho người đang theo dõi đơn (gọi sau commit) */
+  private publish(
+    order: { id: string; code: string; status: OrderStatus },
+    previousStatus: OrderStatus | null,
+    actor: TimelineActor,
+    note: string | null,
+  ): void {
+    this.events.orderUpdated({
+      orderId: order.id,
+      code: order.code,
+      status: order.status,
+      previousStatus,
+      actor,
+      note,
+      changedAt: new Date().toISOString(),
+    });
   }
 
   private paymentTimeoutMs(): number {

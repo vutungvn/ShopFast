@@ -18,7 +18,9 @@ import { OrderItemsList } from '@/features/orders/components/OrderItemsList'
 import { OrderStatusBadge } from '@/features/orders/components/OrderStatusBadge'
 import { OrderStepper } from '@/features/orders/components/OrderStepper'
 import { OrderTimeline } from '@/features/orders/components/OrderTimeline'
+import { LiveBadge } from '@/features/orders/components/LiveBadge'
 import { OrderLoadState } from '@/features/orders/components/OrderLoadState'
+import { useLiveOrder, type OrderUpdatedEvent } from '@/features/orders/live'
 import { useAdvanceOrder, useCancelOrder, useOrderDetail } from '@/features/orders/queries'
 import { ADVANCE_LABELS, nextStatus, STAFF_CANCELLABLE, STATUS_LABELS } from '@/features/orders/order-status'
 import type { OrderDetail, OrderStatus } from '@/features/orders/types'
@@ -40,6 +42,11 @@ export function StaffOrderDetailPage() {
 
 function StaffOrder({ user, orderId }: { user: User; orderId: string }) {
   const query = useOrderDetail(orderId)
+  const [liveNotice, setLiveNotice] = useState<{ id: number; event: OrderUpdatedEvent } | null>(null)
+  // Khách thanh toán / huỷ, hệ thống tự huỷ trong lúc đang mở đơn: báo cho nhân viên
+  const live = useLiveOrder(orderId, (event) => {
+    if (event.actor !== 'STAFF') setLiveNotice({ id: ++toastSeq, event })
+  })
   const order = query.data
 
   if (!order) {
@@ -63,6 +70,7 @@ function StaffOrder({ user, orderId }: { user: User; orderId: string }) {
         <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">Đơn {order.code}</h1>
         <CopyButton value={order.code} label="Sao chép mã đơn" />
         <OrderStatusBadge status={order.status} />
+        <LiveBadge state={live} />
         <p className="flex items-center gap-1.5 text-sm text-slate-500 sm:ml-auto">
           <Clock className="size-4" aria-hidden />
           Đặt lúc {formatDateTime(order.createdAt)}
@@ -110,6 +118,18 @@ function StaffOrder({ user, orderId }: { user: User; orderId: string }) {
           <PaymentCard order={order} />
         </aside>
       </div>
+
+      {liveNotice && (
+        <Toast
+          key={liveNotice.id}
+          variant={liveNotice.event.status === 'CANCELLED' ? 'warning' : 'success'}
+          title={liveNotice.event.status === 'CANCELLED' ? 'Đơn vừa bị huỷ' : 'Đơn vừa được cập nhật'}
+          onClose={() => setLiveNotice(null)}
+        >
+          {liveNotice.event.actor === 'CUSTOMER' ? 'Khách' : 'Hệ thống'} → {STATUS_LABELS[liveNotice.event.status]}
+          {liveNotice.event.note && ` · ${liveNotice.event.note}`}
+        </Toast>
+      )}
     </>
   )
 }

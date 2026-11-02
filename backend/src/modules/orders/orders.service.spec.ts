@@ -20,6 +20,7 @@ import {
   OrdersRepository,
   PayResult,
 } from './orders.repository';
+import { OrderEventsPublisher } from './order-events';
 import { OrdersService } from './orders.service';
 
 const dto: CreateOrderDto = {
@@ -71,6 +72,9 @@ const fakeProductCache = () =>
     invalidate: jest.fn(async () => {}),
   }) as unknown as jest.Mocked<ProductCacheService>;
 
+const fakeEvents = () =>
+  ({ orderUpdated: jest.fn() }) as jest.Mocked<OrderEventsPublisher>;
+
 const TIMEOUT_MINUTES = 60;
 const config = {
   get: () => TIMEOUT_MINUTES,
@@ -94,12 +98,14 @@ function fakeCheckout(lines: CheckoutLine[], stock: Record<string, number>) {
     withCheckout: jest.fn((_userId, work) => work(checkout)),
   } as unknown as jest.Mocked<OrdersRepository>;
   const productCache = fakeProductCache();
+  const events = fakeEvents();
   return {
     checkout,
     repo,
     inventory,
     productCache,
-    service: new OrdersService(repo, config, productCache),
+    events,
+    service: new OrdersService(repo, config, productCache, events),
   };
 }
 
@@ -163,6 +169,26 @@ describe('OrdersService.placeOrder', () => {
     );
     await service.placeOrder('u1', dto);
     expect(productCache.invalidate).toHaveBeenCalledWith(['a', 'b']);
+  });
+
+  it('đặt thành công => phát sự kiện đơn mới (cho màn kho)', async () => {
+    const { service, events } = fakeCheckout([line('a', 100, 1)], { a: 1 });
+    const order = await service.placeOrder('u1', dto);
+    expect(events.orderUpdated).toHaveBeenCalledWith({
+      orderId: order.id,
+      code: order.code,
+      status: OrderStatus.PENDING_PAYMENT,
+      previousStatus: null,
+      actor: 'CUSTOMER',
+      note: null,
+      changedAt: expect.any(String),
+    });
+  });
+
+  it('đặt thất bại => không phát sự kiện', async () => {
+    const { service, events } = fakeCheckout([line('a', 100, 2)], { a: 1 });
+    await expect(service.placeOrder('u1', dto)).rejects.toThrow();
+    expect(events.orderUpdated).not.toHaveBeenCalled();
   });
 
   it('giỏ trống => 409, không tạo đơn', async () => {
@@ -270,9 +296,11 @@ describe('OrdersService.pay', () => {
     const repo = {
       markPaid: jest.fn().mockResolvedValue(result),
     } as unknown as jest.Mocked<OrdersRepository>;
+    const events = fakeEvents();
     return {
       repo,
-      service: new OrdersService(repo, config, fakeProductCache()),
+      events,
+      service: new OrdersService(repo, config, fakeProductCache(), events),
     };
   }
 
@@ -289,11 +317,28 @@ describe('OrdersService.pay', () => {
     paidAt: new Date(),
   });
 
-  it('thành công => trả đơn PAID', async () => {
-    const { service } = setup({ paid: true, order: paidOrder() });
+  it('thành công => trả đơn PAID và phát sự kiện', async () => {
+    const { service, events } = setup({ paid: true, order: paidOrder() });
     const order = await service.pay('u1', 'o1');
     expect(order.status).toBe(OrderStatus.PAID);
     expect(order.paidAt).toBeInstanceOf(Date);
+    expect(events.orderUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: OrderStatus.PAID,
+        previousStatus: OrderStatus.PENDING_PAYMENT,
+        actor: 'CUSTOMER',
+        note: 'Thanh toán (giả lập)',
+      }),
+    );
+  });
+
+  it('không thanh toán được => không phát sự kiện', async () => {
+    const { service, events } = setup({
+      paid: false,
+      current: { status: OrderStatus.CANCELLED },
+    });
+    await expect(service.pay('u1', 'o1')).rejects.toThrow(ConflictException);
+    expect(events.orderUpdated).not.toHaveBeenCalled();
   });
 
   it('chỉ nhận đơn đặt trong hạn thanh toán (cấu hình theo phút)', async () => {
@@ -357,11 +402,13 @@ function lockedSetup(status: OrderStatus | null, paidAt: Date | null = null) {
     withLockedOrder: jest.fn((_id, _userId, work) => work(locked)),
   } as unknown as jest.Mocked<OrdersRepository>;
   const productCache = fakeProductCache();
+  const events = fakeEvents();
   return {
     locked,
     repo,
     productCache,
-    service: new OrdersService(repo, config, productCache),
+    events,
+    service: new OrdersService(repo, config, productCache, events),
   };
 }
 
@@ -477,6 +524,19 @@ describe('OrdersService.cancel – nhân viên', () => {
     );
   });
 
+  it('huỷ xong => phát sự kiện kèm trạng thái trước, người huỷ là nhân viên', async () => {
+    const { service, events } = lockedSetup(OrderStatus.PACKING, new Date());
+    await service.cancel(warehouseActor, 'o1', { reason: 'Hết hàng thật' });
+    expect(events.orderUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: OrderStatus.CANCELLED,
+        previousStatus: OrderStatus.PACKING,
+        actor: 'STAFF',
+        note: 'Hết hàng thật · Hoàn tiền (giả lập)',
+      }),
+    );
+  });
+
   it('đơn chưa thanh toán => không ghi hoàn tiền', async () => {
     const { service, locked } = lockedSetup(OrderStatus.PENDING_PAYMENT);
     await service.cancel(warehouseActor, 'o1', {
@@ -540,6 +600,24 @@ describe('OrdersService.updateStatus', () => {
     );
   });
 
+  it('đổi xong => phát sự kiện cho người đang theo dõi đơn', async () => {
+    const { service, events } = withDetail(OrderStatus.PACKING);
+    await service.updateStatus(warehouseActor, 'o1', {
+      status: OrderStatus.SHIPPING,
+      note: 'GHN',
+    });
+    expect(events.orderUpdated).toHaveBeenCalledTimes(1);
+    const event = events.orderUpdated.mock.calls[0][0];
+    expect(event).toMatchObject({
+      code: 'SF-261030-AAAA',
+      status: OrderStatus.SHIPPING,
+      previousStatus: OrderStatus.PACKING,
+      actor: 'STAFF',
+      note: 'GHN',
+    });
+    expect(Date.parse(event.changedAt)).toBeLessThanOrEqual(Date.now());
+  });
+
   it('ghi chú rỗng => null', async () => {
     const { service, locked } = withDetail(OrderStatus.PAID);
     await service.updateStatus(warehouseActor, 'o1', {
@@ -593,7 +671,12 @@ describe('OrdersService.listForStaff', () => {
     } as unknown as jest.Mocked<OrdersRepository>;
     return {
       repo,
-      service: new OrdersService(repo, config, fakeProductCache()),
+      service: new OrdersService(
+        repo,
+        config,
+        fakeProductCache(),
+        fakeEvents(),
+      ),
     };
   }
   const query = (props: Partial<StaffOrderQueryDto>) =>
@@ -696,7 +779,12 @@ describe('OrdersService.getDetail', () => {
     } as unknown as jest.Mocked<OrdersRepository>;
     return {
       repo,
-      service: new OrdersService(repo, config, fakeProductCache()),
+      service: new OrdersService(
+        repo,
+        config,
+        fakeProductCache(),
+        fakeEvents(),
+      ),
     };
   }
 
@@ -788,7 +876,12 @@ describe('OrdersService.listMine', () => {
     const repo = {
       listByUser: jest.fn().mockResolvedValue([[order], 21]),
     } as unknown as jest.Mocked<OrdersRepository>;
-    const service = new OrdersService(repo, config, fakeProductCache());
+    const service = new OrdersService(
+      repo,
+      config,
+      fakeProductCache(),
+      fakeEvents(),
+    );
     const query = Object.assign(new OrderQueryDto(), {
       page: 2,
       limit: 20,
@@ -842,11 +935,13 @@ describe('OrdersService.expireOverdueOrders', () => {
       ),
     } as unknown as jest.Mocked<OrdersRepository>;
     const productCache = fakeProductCache();
+    const events = fakeEvents();
     return {
       repo,
       cancels,
       productCache,
-      service: new OrdersService(repo, config, productCache),
+      events,
+      service: new OrdersService(repo, config, productCache, events),
     };
   }
 
@@ -871,6 +966,22 @@ describe('OrdersService.expireOverdueOrders', () => {
     });
     await service.expireOverdueOrders();
     expect(productCache.invalidate.mock.calls).toEqual([[['p-a']]]);
+  });
+
+  it('phát sự kiện cho từng đơn vừa tự huỷ, người đổi là hệ thống', async () => {
+    const { service, events } = setup(['a', 'b'], {
+      a: OrderStatus.PENDING_PAYMENT,
+      b: OrderStatus.CANCELLED,
+    });
+    await service.expireOverdueOrders();
+    expect(events.orderUpdated).toHaveBeenCalledTimes(1);
+    expect(events.orderUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        previousStatus: OrderStatus.PENDING_PAYMENT,
+        actor: 'SYSTEM',
+        note: 'Tự huỷ do quá hạn thanh toán',
+      }),
+    );
   });
 
   it('chỉ lấy đơn đặt trước mốc hạn thanh toán, tối đa 100 đơn mỗi lượt', async () => {
@@ -901,6 +1012,7 @@ describe('OrdersService.stats', () => {
       repo,
       config,
       fakeProductCache(),
+      fakeEvents(),
     ).stats();
     expect(counts).toEqual({
       PENDING_PAYMENT: 0,
