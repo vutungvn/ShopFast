@@ -64,6 +64,9 @@ export interface NewOrder {
   }>;
 }
 
+/** Ghi chú lịch sử khi khách thanh toán giả lập */
+export const PAYMENT_NOTE = 'Thanh toán (giả lập)';
+
 /** Kết quả thanh toán: không thanh toán được thì kèm trạng thái hiện tại (null = không có đơn của user này) */
 export type PayResult =
   | { paid: true; order: OrderWithItems }
@@ -204,6 +207,15 @@ export class OrdersRepository {
     return rows.map((row) => row.id);
   }
 
+  /** Chủ đơn (kiểm tra quyền theo dõi realtime); null nếu không có đơn */
+  async findOwnerId(orderId: string): Promise<string | null> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { userId: true },
+    });
+    return order?.userId ?? null;
+  }
+
   /** Chi tiết đơn; truyền `userId` để chỉ tìm trong đơn của user đó (khách), bỏ trống cho nhân viên. */
   findDetail(orderId: string, userId?: string): Promise<OrderDetail | null> {
     return this.prisma.order.findFirst({
@@ -286,7 +298,7 @@ export class OrdersRepository {
           fromStatus: OrderStatus.PENDING_PAYMENT,
           toStatus: OrderStatus.PAID,
           changedById: userId,
-          note: 'Thanh toán (giả lập)',
+          note: PAYMENT_NOTE,
         },
       });
       const order = await tx.order.findUniqueOrThrow({

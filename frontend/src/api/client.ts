@@ -19,6 +19,11 @@ export function setAccessToken(token: string | null) {
   accessToken = token
 }
 
+/** Kết nối realtime gửi token lúc bắt tay (không đi qua axios) */
+export function getAccessToken() {
+  return accessToken
+}
+
 let onSessionExpired: (() => void) | null = null
 
 /** AuthProvider đăng ký để chuyển về trạng thái chưa đăng nhập khi không refresh được. */

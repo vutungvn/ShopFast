@@ -11,7 +11,11 @@ export default defineConfig(({ mode }) => {
 
   // Chuyển /api sang backend để trình duyệt coi là cùng nguồn: cookie refresh (SameSite=Strict,
   // Path=/api/v1/auth) hoạt động mà không cần CORS. Production làm tương tự bằng Nginx.
-  const proxy = { '/api': API_PROXY_TARGET }
+  const proxy = {
+    '/api': API_PROXY_TARGET,
+    // Realtime (Socket.IO): ws để chuyển cả kết nối WebSocket
+    '/socket.io': { target: API_PROXY_TARGET, ws: true },
+  }
 
   return {
     plugins: [

@@ -6,21 +6,33 @@ import { Breadcrumb } from '@/components/ui/Breadcrumb'
 import { Button } from '@/components/ui/Button'
 import { buttonClasses } from '@/components/ui/button-styles'
 import { CopyButton } from '@/components/ui/CopyButton'
+import { Toast } from '@/components/ui/Toast'
 import { formatDateTime } from '@/lib/format'
 import { CancelOrderDialog } from '../components/CancelOrderDialog'
+import { LiveBadge } from '../components/LiveBadge'
 import { PaymentCard, RecipientCard } from '../components/OrderInfoCards'
 import { OrderItemsList } from '../components/OrderItemsList'
 import { OrderStatusBadge } from '../components/OrderStatusBadge'
 import { OrderStepper } from '../components/OrderStepper'
 import { OrderTimeline } from '../components/OrderTimeline'
 import { OrderLoadState } from '../components/OrderLoadState'
+import { useLiveOrder, type OrderUpdatedEvent } from '../live'
+import { STATUS_LABELS } from '../order-status'
 import { useCancelOrder, useOrderDetail } from '../queries'
+
+/** Mã thông báo: đổi `key` để hiện lại và đếm giờ tự đóng từ đầu */
+let noticeSeq = 0
 
 export function OrderDetailPage() {
   const { id = '' } = useParams()
   const query = useOrderDetail(id)
   const cancelOrder = useCancelOrder()
   const [cancelOpen, setCancelOpen] = useState(false)
+  const [notice, setNotice] = useState<{ id: number; event: OrderUpdatedEvent } | null>(null)
+  // Kho / hệ thống đổi trạng thái: màn hình tự cập nhật, báo thêm cho khách biết
+  const live = useLiveOrder(id, (event) => {
+    if (event.actor !== 'CUSTOMER') setNotice({ id: ++noticeSeq, event })
+  })
   const order = query.data
 
   if (!order) {
@@ -54,6 +66,7 @@ export function OrderDetailPage() {
             <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">Đơn hàng {order.code}</h1>
             <CopyButton value={order.code} label="Sao chép mã đơn" />
             <OrderStatusBadge status={order.status} />
+            <LiveBadge state={live} />
           </div>
           <p className="mt-1 flex items-center gap-1.5 text-sm text-slate-500">
             <Clock className="size-4" aria-hidden />
@@ -131,6 +144,18 @@ export function OrderDetailPage() {
           await cancelOrder.mutateAsync({ orderId: order.id, reason })
         }}
       />
+
+      {notice && (
+        <Toast
+          key={notice.id}
+          variant={notice.event.status === 'CANCELLED' ? 'warning' : 'success'}
+          title={notice.event.status === 'CANCELLED' ? 'Đơn hàng đã bị huỷ' : 'Đơn hàng vừa được cập nhật'}
+          onClose={() => setNotice(null)}
+        >
+          {STATUS_LABELS[notice.event.status]}
+          {notice.event.note && ` · ${notice.event.note}`}
+        </Toast>
+      )}
     </>
   )
 }

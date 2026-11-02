@@ -37,6 +37,8 @@ export class RateLimitGuard extends ThrottlerGuard {
   }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    // Guard toàn cục chạy cả cho WebSocket gateway: rate limit chỉ áp cho HTTP
+    if (context.getType() !== 'http') return true;
     if (this.config.get('THROTTLE_DISABLED', { infer: true })) return true;
     const request = context
       .switchToHttp()

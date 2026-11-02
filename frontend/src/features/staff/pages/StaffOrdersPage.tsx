@@ -12,7 +12,9 @@ import { Pagination } from '@/components/ui/Pagination'
 import { Toast } from '@/components/ui/Toast'
 import { useAuth } from '@/features/auth/auth-context'
 import type { User } from '@/features/auth/types'
+import { LiveBadge } from '@/features/orders/components/LiveBadge'
 import { OrderStatusBadge } from '@/features/orders/components/OrderStatusBadge'
+import { useOrderEvents } from '@/features/orders/live'
 import { useAdvanceOrder, useOrderStats, useStaffOrders } from '@/features/orders/queries'
 import { ADVANCE_LABELS, STATUS_LABELS } from '@/features/orders/order-status'
 import { ORDER_STATUSES, type OrderStatus, type StaffOrderSort, type StaffOrderSummary } from '@/features/orders/types'
@@ -78,6 +80,14 @@ function StaffOrders({ user }: { user: User }) {
   const [searchDraft, setSearchDraft] = useState(filters.q)
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
+  // Danh sách và số liệu tự tải lại khi có đơn đổi; đơn mới / khách vừa thanh toán thì báo thêm
+  const live = useOrderEvents((event) => {
+    if (event.previousStatus === null) {
+      setNotice({ id: ++noticeSeq, variant: 'success', title: 'Có đơn mới', message: `${event.code} · chờ khách thanh toán` })
+    } else if (event.status === 'PAID') {
+      setNotice({ id: ++noticeSeq, variant: 'success', title: 'Khách vừa thanh toán', message: `${event.code} · cần xác nhận` })
+    }
+  })
 
   const update = (patch: Partial<Record<'status' | 'q' | 'from' | 'to' | 'sort' | 'page', string>>) => {
     const next = new URLSearchParams(params)
@@ -129,7 +139,10 @@ function StaffOrders({ user }: { user: User }) {
   return (
     <>
       <div>
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">Quản lý đơn hàng</h1>
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">Quản lý đơn hàng</h1>
+          <LiveBadge state={live} />
+        </div>
         <p className="mt-1 text-sm text-slate-500">Xử lý đơn theo thứ tự đặt trước làm trước</p>
       </div>
 

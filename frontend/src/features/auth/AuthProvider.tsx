@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { refreshAccessToken, setAccessToken, setSessionExpiredHandler } from '@/api/client'
 import { queryClient } from '@/app/queryClient'
 import { CART_QUERY_KEY } from '@/features/cart/queries'
+import { startOrderLive } from '@/features/orders/live'
 import { ORDERS_QUERY_KEY } from '@/features/orders/queries'
 import { authApi } from './api'
 import { AuthContext, type AuthState } from './auth-context'
@@ -42,6 +43,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })
     return () => setSessionExpiredHandler(null)
   }, [])
+
+  // Realtime theo phiên: đăng nhập thì kết nối, đăng xuất / hết phiên / đổi tài khoản thì ngắt
+  const userId = state.user?.id
+  useEffect(() => (userId ? startOrderLive() : undefined), [userId])
 
   const login = async (email: string, password: string) => {
     const { accessToken, user } = await authApi.login(email, password)

@@ -81,6 +81,7 @@ describe('RateLimitGuard', () => {
       },
     };
     const context = {
+      getType: () => 'http',
       switchToHttp: () => ({ getRequest: () => req, getResponse: () => res }),
       getHandler: () => TestController.prototype[route],
       getClass: () => TestController,
@@ -168,6 +169,17 @@ describe('RateLimitGuard', () => {
     it('THROTTLE_DISABLED (chỉ dùng khi test) => không đếm', async () => {
       env.THROTTLE_DISABLED = true;
       await callTimes(10, {});
+      expect(storage.storage.size).toBe(0);
+    });
+
+    it('sự kiện WebSocket (gateway realtime) => không đếm, không đọc request HTTP', async () => {
+      const context = {
+        getType: () => 'ws',
+        switchToHttp: () => {
+          throw new Error('không được đọc request HTTP');
+        },
+      } as unknown as ExecutionContext;
+      await expect(guard.canActivate(context)).resolves.toBe(true);
       expect(storage.storage.size).toBe(0);
     });
   });
